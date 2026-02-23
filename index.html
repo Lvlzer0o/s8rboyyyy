@@ -1,0 +1,882 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OneShot 3D Skate</title>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.min.js"></script>
+    <style>
+      :root {
+        --bg: #0a1022;
+        --panel: #081225;
+        --line: #5eead4;
+        --accent: #f4a261;
+        --danger: #e76f51;
+      }
+
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        font-family: 'Orbitron', 'Trebuchet MS', Arial, sans-serif;
+        background: radial-gradient(circle at 20% 10%, #1f4473 0%, var(--bg) 48%, #040712 100%);
+      }
+
+      @font-face {
+        font-family: 'Orbitron';
+        src: url('https://fonts.gstatic.com/s/orbitron/v29/yMJMMIlzdpvBJqUqJ4QwQJQ.woff2') format('woff2');
+        font-display: swap;
+      }
+
+      #hud {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        background: color-mix(in srgb, var(--panel) 80%, transparent);
+        border: 1px solid rgba(94, 234, 212, 0.35);
+        border-radius: 14px;
+        padding: 12px 14px;
+        color: #d9efff;
+        z-index: 10;
+        backdrop-filter: blur(4px);
+        box-shadow: 0 10px 30px rgba(2, 6, 23, 0.45);
+      }
+
+      #hud .row {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 4px;
+      }
+
+      #hud .stat {
+        min-width: 130px;
+        color: #d9efff;
+        font-size: 12px;
+      }
+
+      #hud .value {
+        color: var(--line);
+      }
+
+      #hud .title {
+        font-weight: 700;
+        margin-bottom: 6px;
+        letter-spacing: 0.08em;
+      }
+
+      #message {
+        margin-top: 6px;
+        font-size: 12px;
+        color: #f7efe2;
+        min-height: 26px;
+        white-space: nowrap;
+      }
+
+      .pulse {
+        color: var(--accent) !important;
+        text-shadow: 0 0 12px rgba(244, 162, 97, 0.45);
+      }
+
+      #overlay {
+        position: fixed;
+        left: 0;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        display: grid;
+        place-items: center;
+        text-align: center;
+        color: #ecfeff;
+        background: linear-gradient(160deg, rgba(3, 7, 18, 0.35), rgba(8, 11, 24, 0.7));
+        z-index: 12;
+        pointer-events: none;
+      }
+
+      #overlay h1 {
+        font-size: 46px;
+        margin: 0;
+        letter-spacing: 0.08em;
+        color: var(--line);
+        text-shadow: 0 0 30px rgba(94, 234, 212, 0.45);
+      }
+
+      #overlay p {
+        margin: 10px 0 0;
+        color: #d6ecff;
+        font-size: 16px;
+      }
+
+      #startHelp {
+        margin-top: 14px;
+        color: #f7efe2;
+        font-size: 12px;
+        max-width: 62ch;
+        line-height: 1.45;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="hud">
+      <div class="title">ONESHOT SKATE</div>
+      <div class="row">
+        <div class="stat">Speed: <span id="speed" class="value">0.0</span>m/s</div>
+        <div class="stat">Score: <span id="score" class="value">0</span></div>
+      </div>
+      <div class="row">
+        <div class="stat">Distance: <span id="distance" class="value">0</span>m</div>
+        <div class="stat">Time: <span id="timeLeft" class="value">180</span>s</div>
+      </div>
+      <div class="row">
+        <div class="stat">Lives: <span id="lives" class="value">3</span></div>
+      </div>
+      <div id="message" class="pulse">Press Enter to Start</div>
+    </div>
+    <div id="overlay">
+      <div>
+        <h1>ONESHOT SKATE</h1>
+        <p id="overlayText">Slam your board through a neon skate park and keep your combo alive.</p>
+        <div id="startHelp">WASD or Arrow Keys: Move and turn &nbsp; | &nbsp; Space: Ollie/trick launch &nbsp; | &nbsp; P: Pause &nbsp; | &nbsp; Enter: Start/Resume &nbsp; | &nbsp; R: Restart</div>
+      </div>
+    </div>
+
+    <script>
+      const CONFIG = {
+        segmentLength: 180,
+        segmentCount: 12,
+        segmentHalfWidth: 44,
+        segmentSamples: 72,
+        gravity: 33,
+        accel: 34,
+        brake: 0.88,
+        dragGround: 0.985,
+        dragAir: 0.996,
+        maxSpeed: 30,
+        turnRate: 1.9,
+        jumpSpeed: 16,
+        boardRadius: 0.85,
+        worldTime: 180,
+        obstacleCount: 34,
+        coinCount: 22,
+        obstacleRecycleOffset: 260,
+        coinRecycleOffset: 180,
+      };
+
+      const clock = new THREE.Clock();
+      const scene = new THREE.Scene();
+      scene.fog = new THREE.Fog(0x0b1530, 110, 620);
+      scene.background = new THREE.Color(0x081024);
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.shadowMap.enabled = true;
+      document.body.appendChild(renderer.domElement);
+
+      const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1800);
+      camera.position.set(0, 8, -12);
+
+      const ambient = new THREE.HemisphereLight(0x9ce2ff, 0x11131d, 0.75);
+      scene.add(ambient);
+
+      const sun = new THREE.DirectionalLight(0xe8f4ff, 1.05);
+      sun.position.set(-6, 18, 12);
+      sun.castShadow = true;
+      sun.shadow.mapSize.set(2048, 2048);
+      sun.shadow.camera.left = -100;
+      sun.shadow.camera.right = 100;
+      sun.shadow.camera.top = 100;
+      sun.shadow.camera.bottom = -100;
+      scene.add(sun);
+      scene.add(sun.target);
+
+      const rimLights = [
+        new THREE.PointLight(0x7cf3ff, 1.25, 250),
+        new THREE.PointLight(0xff8f6d, 1.1, 190),
+      ];
+      rimLights[0].position.set(20, 22, -15);
+      rimLights[1].position.set(-26, 16, 120);
+      rimLights.forEach((light) => {
+        light.castShadow = false;
+        scene.add(light);
+      });
+
+      const terrainGroup = new THREE.Group();
+      scene.add(terrainGroup);
+      const groundMaterial = new THREE.MeshStandardMaterial({
+        color: 0x3b5e57,
+        roughness: 0.95,
+        metalness: 0,
+      });
+
+      const templateGround = new THREE.PlaneGeometry(
+        CONFIG.segmentHalfWidth * 2,
+        CONFIG.segmentLength,
+        CONFIG.segmentSamples,
+        CONFIG.segmentSamples,
+      );
+      templateGround.rotateX(-Math.PI / 2);
+
+      const groundSegments = [];
+
+      const player = {
+        mesh: null,
+        position: new THREE.Vector3(0, 4, 0),
+        velocity: new THREE.Vector3(0, 0, 6),
+        yaw: 0,
+        grounded: false,
+        airTime: 0,
+        lives: 3,
+        score: 0,
+        distance: 0,
+        invuln: 0,
+      };
+
+      const game = {
+        state: 'menu',
+        timeLeft: CONFIG.worldTime,
+        paused: false,
+        flash: 0,
+      };
+
+      const input = {
+        forward: false,
+        backward: false,
+        left: false,
+        right: false,
+        jump: false,
+      };
+
+      const overlay = document.getElementById('overlay');
+      const overlayText = document.getElementById('overlayText');
+      const message = document.getElementById('message');
+      const scoreEl = document.getElementById('score');
+      const speedEl = document.getElementById('speed');
+      const distanceEl = document.getElementById('distance');
+      const timeEl = document.getElementById('timeLeft');
+      const livesEl = document.getElementById('lives');
+
+      let bannerTimeout = 0;
+      let lastTime = 0;
+
+      const obstacles = [];
+      const coins = [];
+
+      function terrainHeight(x, z) {
+        return (
+          Math.sin(z * 0.05) * 1.2 +
+          Math.cos(x * 0.07) * 1.1 +
+          Math.sin((x + z) * 0.028) * 0.7 +
+          Math.cos((x - z * 0.9) * 0.02) * 0.45
+        );
+      }
+
+      function terrainNormal(x, z) {
+        const e = 0.28;
+        const hX1 = terrainHeight(x - e, z);
+        const hX2 = terrainHeight(x + e, z);
+        const hZ1 = terrainHeight(x, z - e);
+        const hZ2 = terrainHeight(x, z + e);
+        const dX = (hX2 - hX1) / (2 * e);
+        const dZ = (hZ2 - hZ1) / (2 * e);
+        const n = new THREE.Vector3(-dX, 1, -dZ).normalize();
+        return n;
+      }
+
+      function applyTerrain(mesh) {
+        const positions = mesh.geometry.attributes.position;
+        const offsetX = mesh.position.x;
+        const offsetZ = mesh.position.z;
+        for (let i = 0; i < positions.count; i++) {
+          const px = positions.getX(i) + offsetX;
+          const pz = positions.getZ(i) + offsetZ;
+          positions.setY(i, terrainHeight(px, pz));
+        }
+        positions.needsUpdate = true;
+        mesh.geometry.computeVertexNormals();
+      }
+
+      function makeGroundSegment(index) {
+        const seg = new THREE.Mesh(templateGround.clone(), groundMaterial);
+        seg.receiveShadow = true;
+        seg.position.z = index * CONFIG.segmentLength;
+        seg.position.x = 0;
+        applyTerrain(seg);
+        terrainGroup.add(seg);
+        groundSegments.push(seg);
+      }
+
+      function makePlayer() {
+        const skater = new THREE.Group();
+        const deckMat = new THREE.MeshStandardMaterial({ color: 0xff5b5c, roughness: 0.32, metalness: 0.3 });
+        const deck = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.08, 2.6), deckMat);
+        deck.castShadow = true;
+        deck.receiveShadow = false;
+        skater.add(deck);
+
+        const truckMat = new THREE.MeshStandardMaterial({ color: 0x1d1f20, roughness: 0.25, metalness: 0.75 });
+        const frontAxel = new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.09, 0.24), truckMat);
+        frontAxel.position.set(0, -0.06, 1.0);
+        skater.add(frontAxel);
+        const backAxel = new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.09, 0.24), truckMat);
+        backAxel.position.set(0, -0.06, -1.0);
+        skater.add(backAxel);
+
+        const wheelMat = new THREE.MeshStandardMaterial({ color: 0x20272d, roughness: 0.2, metalness: 0.6 });
+        const wheelGeo = new THREE.CylinderGeometry(0.24, 0.24, 0.2, 16);
+        const wheelPositions = [
+          [0.54, -0.2, 1.07],
+          [-0.54, -0.2, 1.07],
+          [0.54, -0.2, -1.07],
+          [-0.54, -0.2, -1.07],
+        ];
+        wheelPositions.forEach(([x, y, z]) => {
+          const w = new THREE.Mesh(wheelGeo, wheelMat);
+          w.rotation.z = Math.PI / 2;
+          w.position.set(x, y, z);
+          w.castShadow = true;
+          skater.add(w);
+        });
+
+        const bodyMat = new THREE.MeshStandardMaterial({ color: 0x9f8cff, emissive: 0x251942, emissiveIntensity: 0.25 });
+        const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.35, 0.5, 8, 16), bodyMat);
+        body.position.set(0, 0.6, 0.08);
+        skater.add(body);
+
+        const helmetMat = new THREE.MeshStandardMaterial({ color: 0xf7fafc, roughness: 0.3, metalness: 0.5 });
+        const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.21, 16, 10), helmetMat);
+        helmet.position.set(0, 1.16, 0.2);
+        skater.add(helmet);
+
+        skater.position.copy(player.position);
+        skater.rotation.order = 'YXZ';
+        scene.add(skater);
+        player.mesh = skater;
+      }
+
+      function makeObstacle() {
+        const obstacleGroup = new THREE.Group();
+        const isRail = Math.random() < 0.2;
+        let mesh;
+        let radius;
+        let reward = false;
+
+        if (isRail) {
+          const len = 2 + Math.random() * 1.7;
+          const geom = new THREE.BoxGeometry(0.22, 0.35, len);
+          mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ color: 0x4ad5ff }));
+          mesh.position.y = 0.8;
+          radius = len * 0.6;
+        } else {
+          const h = 1.2 + Math.random() * 0.8;
+          const w = 2 + Math.random() * 1.4;
+          const d = 1.1 + Math.random() * 0.8;
+          mesh = new THREE.Mesh(
+            new THREE.BoxGeometry(w, h, d),
+            new THREE.MeshStandardMaterial({ color: 0xd85757, roughness: 0.45, metalness: 0.15 }),
+          );
+          mesh.position.y = h / 2;
+          radius = Math.max(w, d, h) * 0.7;
+        }
+
+        mesh.castShadow = true;
+        obstacleGroup.add(mesh);
+        obstacleGroup.userData.type = isRail ? 'rail' : 'crate';
+        obstacleGroup.userData.mesh = mesh;
+        obstacleGroup.userData.radius = radius;
+        obstacleGroup.userData.hitCooldown = 0;
+        obstacleGroup.userData.active = true;
+        obstacleGroup.userData.reward = reward;
+        terrainGroup.add(obstacleGroup);
+        obstacles.push(obstacleGroup);
+
+        placeObstacleAhead(obstacleGroup);
+      }
+
+      function makeCoin() {
+        const ring = new THREE.Mesh(
+          new THREE.TorusGeometry(0.45, 0.13, 12, 20),
+          new THREE.MeshStandardMaterial({ color: 0xf5d76e, emissive: 0x694e0f, emissiveIntensity: 0.5 }),
+        );
+        const pivot = new THREE.Group();
+        pivot.add(ring);
+        pivot.userData.type = 'coin';
+        pivot.userData.radius = 0.7;
+        pivot.userData.active = true;
+        pivot.userData.spinSpeed = 1.2 + Math.random() * 1.3;
+        pivot.userData.phase = Math.random() * Math.PI * 2;
+        scene.add(pivot);
+        coins.push(pivot);
+        placeCoinAhead(pivot);
+      }
+
+      function placeObstacleAhead(item) {
+        const ahead = (obstacles.length + 1) * 12;
+        const targetZ = player.position.z + CONFIG.segmentLength * 0.5 + Math.random() * CONFIG.obstacleRecycleOffset + ahead;
+        let x = (Math.random() * 2 - 1) * (CONFIG.segmentHalfWidth * 0.78);
+        x = THREE.MathUtils.clamp(x, -CONFIG.segmentHalfWidth + 4, CONFIG.segmentHalfWidth - 4);
+        const y = terrainHeight(x, targetZ);
+        item.position.set(x, y, targetZ);
+        item.rotation.set(0, Math.random() * Math.PI, 0);
+        item.userData.active = true;
+        if (item.userData.type === 'rail') {
+          item.userData.mesh.position.x = 0;
+        }
+        item.visible = true;
+      }
+
+      function placeCoinAhead(item) {
+        const ahead = Math.random() * CONFIG.coinRecycleOffset + CONFIG.segmentLength;
+        const z = player.position.z + Math.random() * CONFIG.coinRecycleOffset + ahead + 12;
+        const x = (Math.random() * 2 - 1) * (CONFIG.segmentHalfWidth * 0.65);
+        item.position.set(x, terrainHeight(x, z) + 1.2, z);
+        item.userData.active = true;
+        item.visible = true;
+      }
+
+      function createWorld() {
+        for (let i = -2; i < CONFIG.segmentCount - 2; i++) {
+          makeGroundSegment(i);
+        }
+        for (let i = 0; i < CONFIG.obstacleCount; i++) makeObstacle();
+        for (let i = 0; i < CONFIG.coinCount; i++) makeCoin();
+      }
+
+      function setMessage(text, ms = 1.5) {
+        message.textContent = text;
+        if (!message.classList.contains('pulse')) message.classList.add('pulse');
+        bannerTimeout = Math.max(bannerTimeout, ms);
+      }
+
+      function resetState() {
+        player.position.set(0, 4, 0);
+        player.velocity.set(0, 0, 6);
+        player.yaw = 0;
+        player.grounded = false;
+        player.airTime = 0;
+        player.invuln = 0;
+        player.score = 0;
+        player.distance = 0;
+        player.lives = 3;
+        game.timeLeft = CONFIG.worldTime;
+        game.flash = 0;
+        game.state = 'menu';
+        game.paused = false;
+
+        groundSegments.forEach((seg, idx) => {
+          seg.position.z = (idx - 2) * CONFIG.segmentLength;
+          applyTerrain(seg);
+        });
+
+        obstacles.forEach((obstacle) => placeObstacleAhead(obstacle));
+        coins.forEach((coin) => placeCoinAhead(coin));
+        if (player.mesh) player.mesh.rotation.set(0, 0, 0);
+        updateUI();
+        showOverlay('Press Enter to Start', false);
+        setMessage('Press Enter to Start');
+      }
+
+      function showOverlay(text, show) {
+        overlay.style.display = show ? 'grid' : 'none';
+        overlayText.textContent = text;
+      }
+
+      function startRun() {
+        game.state = 'play';
+        game.paused = false;
+        showOverlay('', false);
+        setMessage('Ride the line');
+      }
+
+      function endRun(messageText, clearTime = false) {
+        game.state = 'over';
+        if (clearTime) {
+          showOverlay(`YOU CRASHED ALL LIFE BAR`, true);
+        }
+        if (messageText) {
+          message.textContent = messageText;
+        }
+        if (clearTime) {
+          overlayText.textContent = 'Run finished. Press Enter or R to replay.';
+        }
+      }
+
+      function winRun() {
+        game.state = 'win';
+        showOverlay('TIME FINISHED — GREAT RIDE!', true);
+      }
+
+      function checkSegmentRecycle() {
+        for (const seg of groundSegments) {
+          if (player.position.z - seg.position.z > CONFIG.segmentLength * 2.2) {
+            seg.position.z += CONFIG.segmentLength * CONFIG.segmentCount;
+            applyTerrain(seg);
+          }
+          if (seg.position.z - player.position.z > CONFIG.segmentLength * 2.2) {
+            seg.position.z -= CONFIG.segmentLength * CONFIG.segmentCount;
+            applyTerrain(seg);
+          }
+        }
+      }
+
+      function recycleObstaclesAndCoins(dt) {
+        for (const obstacle of obstacles) {
+          if (obstacle.position.z < player.position.z - 40) {
+            placeObstacleAhead(obstacle);
+            obstacle.userData.hitCooldown = 0;
+          }
+          if (obstacle.userData.hitCooldown > 0) obstacle.userData.hitCooldown = Math.max(0, obstacle.userData.hitCooldown - dt);
+        }
+
+        for (const coin of coins) {
+          if (coin.position.z < player.position.z - 30 || !coin.userData.active) {
+            placeCoinAhead(coin);
+          }
+          if (!coin.userData.active && coin.position.z < player.position.z + 10) {
+            placeCoinAhead(coin);
+          }
+        }
+      }
+
+      function handleInput(dt) {
+        const accelInput = (input.forward ? 1 : 0) - (input.backward ? 0.75 : 0);
+
+        const forward = new THREE.Vector3(Math.sin(player.yaw), 0, Math.cos(player.yaw));
+
+        if (player.grounded) {
+          if (accelInput > 0) {
+            player.velocity.x += forward.x * CONFIG.accel * accelInput * dt;
+            player.velocity.z += forward.z * CONFIG.accel * accelInput * dt;
+          } else if (accelInput < 0) {
+            player.velocity.multiplyScalar(0.96);
+          }
+
+          const drag = CONFIG.dragGround;
+          player.velocity.multiplyScalar(drag);
+        } else {
+          player.velocity.x += forward.x * CONFIG.accel * accelInput * dt * 0.58;
+          player.velocity.z += forward.z * CONFIG.accel * accelInput * dt * 0.58;
+          player.velocity.multiplyScalar(CONFIG.dragAir);
+        }
+
+        const groundSpeed = Math.sqrt(player.velocity.x ** 2 + player.velocity.z ** 2);
+        if (groundSpeed > CONFIG.maxSpeed) {
+          const scale = CONFIG.maxSpeed / groundSpeed;
+          player.velocity.x *= scale;
+          player.velocity.z *= scale;
+        }
+
+        const turnSign = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+        if (Math.abs(turnSign) > 0.01 && groundSpeed > 0.8) {
+          const turn = (turnSign * CONFIG.turnRate * dt * (0.35 + Math.min(0.8, groundSpeed / 14))) * (player.velocity.z >= 0 ? 1 : -1);
+          player.yaw += turn;
+        }
+
+        if (groundSpeed < 0.4) {
+          player.yaw *= 0.98;
+        }
+      }
+
+      function jumpLogic() {
+        if (input.jump && player.grounded) {
+          player.velocity.y = CONFIG.jumpSpeed;
+          player.grounded = false;
+          player.airTime = 0;
+          input.jump = false;
+          setMessage('Ollie!');
+        }
+      }
+
+      function updateMovement(dt) {
+        handleInput(dt);
+        jumpLogic();
+
+        if (player.position.x > CONFIG.segmentHalfWidth - 2) {
+          player.position.x = CONFIG.segmentHalfWidth - 2;
+          player.velocity.x *= -0.3;
+        }
+
+        if (player.position.x < -CONFIG.segmentHalfWidth + 2) {
+          player.position.x = -CONFIG.segmentHalfWidth + 2;
+          player.velocity.x *= -0.3;
+        }
+
+        player.velocity.y -= CONFIG.gravity * dt;
+        player.position.addScaledVector(player.velocity, dt);
+
+        const groundY = terrainHeight(player.position.x, player.position.z) + CONFIG.boardRadius;
+        const onGroundNow = player.position.y <= groundY;
+
+        if (onGroundNow && player.velocity.y <= 0) {
+          player.position.y = groundY;
+          if (!player.grounded) {
+            const landedAir = player.airTime;
+            if (landedAir > 0.25) {
+              const trickPoints = Math.floor(Math.min(10, landedAir * 7)) * 100;
+              const bonus = Math.max(2, Math.floor(Math.sqrt(player.velocity.length()) * 12));
+              const scoreGain = trickPoints + bonus;
+              player.score += scoreGain;
+              setMessage(`${landedAir.toFixed(1)}s trick: +${scoreGain}`);
+            }
+            player.airTime = 0;
+          }
+          player.grounded = true;
+          player.velocity.y = 0;
+          if (input.forward) {
+            player.velocity.multiplyScalar(1.005);
+          }
+        } else {
+          player.airTime += dt;
+          player.grounded = false;
+        }
+
+        const horizSpeed = new THREE.Vector3(player.velocity.x, 0, player.velocity.z).length();
+        player.distance += horizSpeed * dt;
+
+        if (game.timeLeft > 0 && game.state === 'play') game.timeLeft = Math.max(0, game.timeLeft - dt);
+        if (game.timeLeft <= 0 && game.state === 'play') {
+          winRun();
+          game.state = 'win';
+        }
+      }
+
+      function orientPlayer(dt) {
+        const forward = new THREE.Vector3(Math.sin(player.yaw), 0, Math.cos(player.yaw));
+        const groundNormal = terrainNormal(player.position.x, player.position.z);
+        const right = new THREE.Vector3().crossVectors(forward, groundNormal).normalize();
+        const groundedForward = new THREE.Vector3().crossVectors(groundNormal, right).normalize();
+
+        const steerSign = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+
+        if (player.grounded) {
+          const matrix = new THREE.Matrix4().lookAt(new THREE.Vector3(), groundedForward, groundNormal);
+          const base = new THREE.Quaternion().setFromRotationMatrix(matrix);
+          const e = new THREE.Euler().setFromQuaternion(base, 'YXZ');
+          e.z -= steerSign * 0.45;
+          e.x -= Math.min(0.45, player.velocity.y * -0.035);
+          const target = new THREE.Quaternion().setFromEuler(e);
+          player.mesh.quaternion.slerp(target, 1 - Math.exp(-7 * dt));
+        } else {
+          const e = new THREE.Euler(-Math.min(0.5, player.airTime * 0.06), player.yaw, -steerSign * 0.5, 'YXZ');
+          const target = new THREE.Quaternion().setFromEuler(e);
+          player.mesh.quaternion.slerp(target, 1 - Math.exp(-10 * dt));
+        }
+
+        const wobble = Math.sin((performance.now() / 150) + lastTime) * 0.015;
+        player.mesh.position.copy(player.position);
+        player.mesh.position.y += 0.05 + wobble;
+        
+      }
+
+      function updateCamera(dt) {
+        const followOffset = new THREE.Vector3(0, 6.6, -15);
+        const camTargetOffset = followOffset.clone();
+        camTargetOffset.applyAxisAngle(new THREE.Vector3(0, 1, 0), player.yaw);
+        const desired = player.position.clone().add(camTargetOffset);
+        camera.position.lerp(desired, 1 - Math.pow(0.0015, dt || 0.016));
+        camera.lookAt(player.position.x, player.position.y + 2.3, player.position.z + 4);
+      }
+
+      function updateObstaclesAndCoins(dt) {
+        const playerPos2D = new THREE.Vector2(player.position.x, player.position.z);
+        for (const item of obstacles) {
+          if (item.userData.hitCooldown > 0) item.userData.hitCooldown = Math.max(0, item.userData.hitCooldown - dt);
+
+          const testY = terrainHeight(item.position.x, item.position.z) + item.userData.radius;
+          item.position.y = THREE.MathUtils.lerp(item.position.y, testY, 0.2);
+
+          const dist2d = playerPos2D.distanceTo(new THREE.Vector2(item.position.x, item.position.z));
+          const closest = Math.sqrt(dist2d ** 2 + (player.position.y - item.position.y) ** 2);
+          if (closest < item.userData.radius + CONFIG.boardRadius && player.invuln <= 0 && item.userData.hitCooldown <= 0) {
+            player.lives -= 1;
+            player.invuln = 1.2;
+            game.flash = 0.18;
+            player.velocity.multiplyScalar(0.33);
+            setMessage('Clean Hit! -1 Life');
+            item.userData.hitCooldown = 1;
+            if (player.lives <= 0) {
+              showOverlay('GAME OVER', true);
+              overlayText.textContent = `Game over. Score ${player.score}. Press Enter or R to replay.`;
+              game.state = 'over';
+            }
+            break;
+          }
+        }
+
+        for (const coin of coins) {
+          if (!coin.userData.active) continue;
+          coin.rotation.x += 0.9 * dt * coin.userData.spinSpeed;
+          coin.rotation.z += 1.1 * dt * coin.userData.spinSpeed;
+          coin.position.y = terrainHeight(coin.position.x, coin.position.z) + 1.15 + Math.sin(performance.now() * 0.002 + coin.userData.phase) * 0.12;
+
+          const d2d = playerPos2D.distanceTo(new THREE.Vector2(coin.position.x, coin.position.z));
+          const d3d = Math.sqrt(d2d ** 2 + (player.position.y - coin.position.y) ** 2);
+          if (coin.userData.active && d3d < 1.05) {
+            player.score += 175;
+            coin.userData.active = false;
+            coin.visible = false;
+            setMessage('+175 Neon Coin');
+          }
+        }
+      }
+
+      function updateUI(dt = 0.016) {
+        const horiz = Math.sqrt(player.velocity.x ** 2 + player.velocity.z ** 2);
+        speedEl.textContent = horiz.toFixed(1);
+        scoreEl.textContent = player.score.toString();
+        distanceEl.textContent = Math.floor(player.distance).toString();
+        timeEl.textContent = Math.ceil(game.timeLeft).toString();
+        livesEl.textContent = player.lives.toString();
+
+        if (bannerTimeout > 0) {
+          bannerTimeout -= dt;
+          if (bannerTimeout <= 0) {
+            message.textContent = game.state === 'play' ? 'Stay fast and avoid obstacles' : '';
+            if (game.state !== 'play') message.classList.remove('pulse');
+          }
+        }
+
+        if (game.flash > 0) {
+          game.flash -= dt;
+          const damage = Math.max(0, Math.min(1, game.flash * 1.8));
+          renderer.setClearColor(new THREE.Color().setHSL(0, 0.5, 0.12 + damage * 0.15));
+        } else {
+          renderer.setClearColor(0x081024);
+        }
+      }
+
+      function tick() {
+        requestAnimationFrame(tick);
+        const dt = Math.min(0.05, clock.getDelta());
+        lastTime = dt;
+
+        if (player.invuln > 0) player.invuln = Math.max(0, player.invuln - dt);
+
+        if (game.state === 'play' && !game.paused) {
+          updateMovement(dt);
+          checkSegmentRecycle();
+          recycleObstaclesAndCoins(dt);
+          updateObstaclesAndCoins(dt);
+          orientPlayer(dt);
+          updateCamera(dt);
+        } else {
+          orientPlayer(Math.max(0.016, dt));
+          updateCamera(Math.max(0.016, dt));
+        }
+
+        updateUI(dt);
+        renderer.render(scene, camera);
+      }
+
+      function init() {
+        createWorld();
+        makePlayer();
+        resetState();
+        scene.rotation.y = 0;
+        tick();
+      }
+
+      window.addEventListener('keydown', (event) => {
+        switch (event.code) {
+          case 'ArrowUp':
+          case 'KeyW':
+            input.forward = true;
+            event.preventDefault();
+            break;
+          case 'ArrowDown':
+          case 'KeyS':
+            input.backward = true;
+            event.preventDefault();
+            break;
+          case 'ArrowLeft':
+          case 'KeyA':
+            input.left = true;
+            event.preventDefault();
+            break;
+          case 'ArrowRight':
+          case 'KeyD':
+            input.right = true;
+            event.preventDefault();
+            break;
+          case 'Space':
+            input.jump = true;
+            event.preventDefault();
+            break;
+          case 'KeyP':
+            if (game.state === 'play') {
+              game.paused = !game.paused;
+              showOverlay(game.paused ? 'PAUSED' : '', game.paused);
+            }
+            break;
+          case 'Enter':
+            if (game.state === 'menu' || game.state === 'over' || game.state === 'win') {
+        if (game.state === 'over' || game.state === 'win') {
+                player.score = 0;
+                player.distance = 0;
+                player.lives = 3;
+                player.invuln = 0;
+                game.timeLeft = CONFIG.worldTime;
+                player.velocity.set(0, 0, 6);
+                player.position.set(0, 4, 0);
+                player.yaw = 0;
+                obstacles.forEach((item) => placeObstacleAhead(item));
+                coins.forEach((item) => placeCoinAhead(item));
+                game.state = 'play';
+                game.paused = false;
+                showOverlay('', false);
+                message.textContent = 'Ride the line';
+                message.classList.add('pulse');
+                bannerTimeout = 0.9;
+              } else {
+                startRun();
+              }
+            }
+            break;
+          case 'KeyR':
+            if (game.state === 'over' || game.state === 'win') {
+              resetState();
+            }
+            break;
+          default:
+            break;
+        }
+      });
+
+      window.addEventListener('keyup', (event) => {
+        switch (event.code) {
+          case 'ArrowUp':
+          case 'KeyW':
+            input.forward = false;
+            break;
+          case 'ArrowDown':
+          case 'KeyS':
+            input.backward = false;
+            break;
+          case 'ArrowLeft':
+          case 'KeyA':
+            input.left = false;
+            break;
+          case 'ArrowRight':
+          case 'KeyD':
+            input.right = false;
+            break;
+          case 'Space':
+            input.jump = false;
+            break;
+          default:
+            break;
+        }
+      });
+
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      init();
+    </script>
+  </body>
+</html>

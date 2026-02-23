@@ -1,0 +1,29 @@
+# Build directories
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Compiler artifacts
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.dylib
+*.exe
+*.out
+
+# CMake generated metadata
+compile_commands.json
+
+# IDE/editor settings
+.idea/
+.vscode/
+
+# OS noise
+.DS_Store
+Thumbs.db
+
