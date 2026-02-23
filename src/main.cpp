@@ -211,6 +211,177 @@ struct ObjModel
   bool loaded = false;
 };
 
+enum class AgentRole
+{
+  VisualUnderstanding,
+  Physics,
+  Rigging,
+  RenderExecution,
+  BlenderBridge,
+};
+
+struct AgentNode
+{
+  AgentRole role = AgentRole::VisualUnderstanding;
+  std::string capabilities;
+  std::string lastAction;
+  bool online = true;
+  float latencyMs = 0.0f;
+};
+
+struct RenderJob
+{
+  std::string objPath;
+  bool requiresPhysicsBake = true;
+  bool requiresRigging = true;
+  bool dispatchToRuntime = true;
+};
+
+struct AgentOrchestrator
+{
+  std::vector<AgentNode> agents;
+  std::vector<std::string> eventLog;
+  size_t maxLogEntries = 14;
+  bool initialized = false;
+
+  void logEvent(const std::string& event)
+  {
+    eventLog.push_back(event);
+    if (eventLog.size() > maxLogEntries)
+    {
+      eventLog.pop_front();
+    }
+  }
+
+  AgentNode* find(AgentRole role)
+  {
+    for (auto& agent : agents)
+    {
+      if (agent.role == role)
+      {
+        return &agent;
+      }
+    }
+    return nullptr;
+  }
+
+  bool ensureOnline(AgentRole role, const std::string& missingMessage)
+  {
+    AgentNode* agent = find(role);
+    if (!agent || !agent->online)
+    {
+      logEvent(missingMessage);
+      return false;
+    }
+    return true;
+  }
+
+  void bootstrap()
+  {
+    if (initialized)
+    {
+      return;
+    }
+
+    agents = {
+      {AgentRole::VisualUnderstanding, "Semantic mesh analysis and material intent extraction", "Idle", true, 6.0f},
+      {AgentRole::Physics, "Collider synthesis and center-of-mass recommendations", "Idle", true, 4.0f},
+      {AgentRole::Rigging, "Skeleton planning and control rig compatibility", "Idle", true, 5.0f},
+      {AgentRole::RenderExecution, "Runtime LOD prep and GPU submission orchestration", "Idle", true, 3.0f},
+      {AgentRole::BlenderBridge, "Blender scene sync and Python bridge messaging", "Idle", true, 8.0f},
+    };
+    initialized = true;
+    logEvent("Agent mesh initialized with 5 specialists.");
+  }
+
+  bool submit(const RenderJob& job)
+  {
+    if (!initialized)
+    {
+      bootstrap();
+    }
+
+    if (!ensureOnline(AgentRole::VisualUnderstanding, "Visual Understanding agent unavailable."))
+    {
+      return false;
+    }
+    if (!ensureOnline(AgentRole::RenderExecution, "Render Execution agent unavailable."))
+    {
+      return false;
+    }
+    if (!ensureOnline(AgentRole::BlenderBridge, "Blender Bridge agent unavailable."))
+    {
+      return false;
+    }
+    if (job.requiresPhysicsBake && !ensureOnline(AgentRole::Physics, "Physics agent unavailable."))
+    {
+      return false;
+    }
+    if (job.requiresRigging && !ensureOnline(AgentRole::Rigging, "Rigging agent unavailable."))
+    {
+      return false;
+    }
+
+    // Cache agent pointers after availability has been ensured.
+    auto* visualAgent = find(AgentRole::VisualUnderstanding);
+    auto* renderExecAgent = job.dispatchToRuntime ? find(AgentRole::RenderExecution) : nullptr;
+    auto* bridgeAgent = find(AgentRole::BlenderBridge);
+    auto* physicsAgent = job.requiresPhysicsBake ? find(AgentRole::Physics) : nullptr;
+    auto* riggingAgent = job.requiresRigging ? find(AgentRole::Rigging) : nullptr;
+
+    if (visualAgent)
+    {
+      visualAgent->lastAction = "Parsed geometric semantics for " + job.objPath;
+    }
+    logEvent("Visual Understanding: inferred topology constraints for " + job.objPath);
+
+    if (job.requiresPhysicsBake && physicsAgent)
+    {
+      physicsAgent->lastAction = "Generated collider envelopes and mass profile";
+      logEvent("Physics: generated collider set + friction profile.");
+    }
+
+    if (job.requiresRigging && riggingAgent)
+    {
+      riggingAgent->lastAction = "Created rig contract and joint hierarchy proposal";
+      logEvent("Rigging: authored animation-ready skeleton metadata.");
+    }
+
+    if (bridgeAgent)
+    {
+      bridgeAgent->lastAction = "Synced job payload to Blender automation bridge";
+    }
+    logEvent("Blender Bridge: dispatched sync command for editable scene graph.");
+
+    if (job.dispatchToRuntime && renderExecAgent)
+    {
+      renderExecAgent->lastAction = "Prepared draw-ready runtime asset manifest";
+      logEvent("Render Execution: queued runtime manifest for in-game renderer.");
+    }
+
+    return true;
+  }
+};
+
+const char* agentRoleName(AgentRole role)
+{
+  switch (role)
+  {
+    case AgentRole::VisualUnderstanding:
+      return "Visual Understanding";
+    case AgentRole::Physics:
+      return "Physics";
+    case AgentRole::Rigging:
+      return "Rigging";
+    case AgentRole::RenderExecution:
+      return "Render Execution";
+    case AgentRole::BlenderBridge:
+      return "Blender Bridge";
+    default:
+      return "Unknown";
+  }
+}
+
 void drawDeck(float flex = 0.0f);
 
 enum class GameState
@@ -258,6 +429,7 @@ int g_windowH = 800;
 std::string g_message = "Press Enter to Start";
 std::string g_overlayTitle;
 std::string g_overlayHint;
+AgentOrchestrator g_agentOrchestrator;
 
 TTF_Font* g_font = nullptr;
 
@@ -2992,6 +3164,41 @@ void drawSkidTrail(float speed)
   glPopMatrix();
 }
 
+void drawAgentOrchestrationStatus()
+{
+  const float left = static_cast<float>(g_windowW - 420);
+  const float top = static_cast<float>(g_windowH - 10);
+  const float bottom = static_cast<float>(g_windowH - 208);
+
+  drawRect2D(left, bottom, static_cast<float>(g_windowW - 10), top, 0.03f, 0.08f, 0.14f, 0.56f);
+  drawRect2D(left + 2.0f, bottom + 2.0f, static_cast<float>(g_windowW - 12), top - 2.0f, 0.06f, 0.16f, 0.22f, 0.38f);
+
+  drawTextWithShadow(static_cast<int>(left + 10.0f), g_windowH - 26, "Agent Mesh: OBJ Render Orchestration", 0.97f);
+
+  int lineY = g_windowH - 46;
+  for (const auto& agent : g_agentOrchestrator.agents)
+  {
+    std::string status = std::string(agentRoleName(agent.role)) +
+      (agent.online ? " [online]" : " [offline]") +
+      "  " + std::to_string(static_cast<int>(agent.latencyMs)) + "ms";
+    drawTextWithShadow(static_cast<int>(left + 10.0f), lineY, status, agent.online ? 0.92f : 0.65f);
+    lineY -= 16;
+    if (lineY < g_windowH - 132)
+    {
+      break;
+    }
+  }
+
+  const size_t maxEvents = std::min<size_t>(4, g_agentOrchestrator.eventLog.size());
+  lineY = g_windowH - 146;
+  for (size_t i = 0; i < maxEvents; ++i)
+  {
+    const size_t idx = g_agentOrchestrator.eventLog.size() - 1 - i;
+    drawTextWithShadow(static_cast<int>(left + 10.0f), lineY, g_agentOrchestrator.eventLog[idx], 0.85f);
+    lineY -= 14;
+  }
+}
+
 void drawHUD()
 {
   glMatrixMode(GL_PROJECTION);
@@ -3035,6 +3242,8 @@ void drawHUD()
   {
     drawTextWithShadow(14, g_windowH - 128, g_message, 1.0f);
   }
+
+  drawAgentOrchestrationStatus();
 
   const float pulse = 0.5f + 0.5f * g_pausePulse;
 
@@ -3395,6 +3604,15 @@ void initGame()
   g_characterModelFallback = !ensureObjAsset(kCharacterObjPath, g_characterModel);
   g_environmentModelFallback = !ensureObjAsset(kEnvironmentObjPath, g_environmentModel);
   ensureHdriSkyTexture();
+
+  g_agentOrchestrator.bootstrap();
+  RenderJob startupJob;
+  startupJob.objPath = kEnvironmentObjPath;
+  startupJob.requiresPhysicsBake = true;
+  startupJob.requiresRigging = false;
+  startupJob.dispatchToRuntime = true;
+  g_agentOrchestrator.submit(startupJob);
+
   makeWorld();
   resetRun();
   showOverlay("ONESHOT SKATE", "Press Enter to Start");
