@@ -355,15 +355,15 @@ const char* agentRoleName(AgentRole role)
   switch (role)
   {
     case AgentRole::VisualUnderstanding:
-      return "VisualUnderstanding";
+      return "Visual Understanding";
     case AgentRole::Physics:
       return "Physics";
     case AgentRole::Rigging:
       return "Rigging";
     case AgentRole::RenderExecution:
-      return "RenderExecution";
+      return "Render Execution";
     case AgentRole::BlenderBridge:
-      return "BlenderBridge";
+      return "Blender Bridge";
     default:
       return "Unknown";
   }
