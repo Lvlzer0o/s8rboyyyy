@@ -38,3 +38,9 @@ Desktop polish features included:
 - Menu scene with cinematic spinning intro camera
 - Pause overlay with pulsing visual
 - In-game HUD with overlay panels and state-specific menu screens
+- Multi-agent orchestration panel for OBJ rendering workflow:
+  - Visual understanding agent (mesh semantics)
+  - Physics agent (colliders and dynamics hints)
+  - Rigging agent (skeleton contract)
+  - Render execution agent (runtime integration)
+  - Blender bridge agent (DCC handoff)
