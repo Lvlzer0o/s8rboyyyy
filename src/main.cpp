@@ -322,27 +322,40 @@ struct AgentOrchestrator
       return false;
     }
 
-    find(AgentRole::VisualUnderstanding)->lastAction = "Parsed geometric semantics for " + job.objPath;
+    // Cache agent pointers after availability has been ensured.
+    auto* visualAgent = find(AgentRole::VisualUnderstanding);
+    auto* renderExecAgent = job.dispatchToRuntime ? find(AgentRole::RenderExecution) : nullptr;
+    auto* bridgeAgent = find(AgentRole::BlenderBridge);
+    auto* physicsAgent = job.requiresPhysicsBake ? find(AgentRole::Physics) : nullptr;
+    auto* riggingAgent = job.requiresRigging ? find(AgentRole::Rigging) : nullptr;
+
+    if (visualAgent)
+    {
+      visualAgent->lastAction = "Parsed geometric semantics for " + job.objPath;
+    }
     logEvent("Visual Understanding: inferred topology constraints for " + job.objPath);
 
-    if (job.requiresPhysicsBake)
+    if (job.requiresPhysicsBake && physicsAgent)
     {
-      find(AgentRole::Physics)->lastAction = "Generated collider envelopes and mass profile";
+      physicsAgent->lastAction = "Generated collider envelopes and mass profile";
       logEvent("Physics: generated collider set + friction profile.");
     }
 
-    if (job.requiresRigging)
+    if (job.requiresRigging && riggingAgent)
     {
-      find(AgentRole::Rigging)->lastAction = "Created rig contract and joint hierarchy proposal";
+      riggingAgent->lastAction = "Created rig contract and joint hierarchy proposal";
       logEvent("Rigging: authored animation-ready skeleton metadata.");
     }
 
-    find(AgentRole::BlenderBridge)->lastAction = "Synced job payload to Blender automation bridge";
+    if (bridgeAgent)
+    {
+      bridgeAgent->lastAction = "Synced job payload to Blender automation bridge";
+    }
     logEvent("Blender Bridge: dispatched sync command for editable scene graph.");
 
-    if (job.dispatchToRuntime)
+    if (job.dispatchToRuntime && renderExecAgent)
     {
-      find(AgentRole::RenderExecution)->lastAction = "Prepared draw-ready runtime asset manifest";
+      renderExecAgent->lastAction = "Prepared draw-ready runtime asset manifest";
       logEvent("Render Execution: queued runtime manifest for in-game renderer.");
     }
 
