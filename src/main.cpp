@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -61,7 +62,7 @@ constexpr float SKY_G2 = 0.35f;
 constexpr float SKY_B2 = 0.62f;
 constexpr float HORIZON_GLOW = 0.18f;
 
-constexpr bool kUseProceduralSkateboard = true;
+constexpr bool kUseProceduralSkateboard = false;
 constexpr float kProceduralDeckWidth = 0.88f;
 constexpr float kProceduralDeckNoseWidth = 0.66f;
 constexpr float kProceduralDeckLength = 2.48f;
@@ -72,8 +73,11 @@ constexpr float kProceduralWheelY = -0.24f;
 constexpr float kProceduralTruckRadius = 0.12f;
 constexpr float kProceduralWheelRadius = 0.31f;
 
-constexpr char kSkateObjPath[] = "assets/models/skateboard.obj";
+constexpr char kSkateObjPath[] = "assets/models/skateboard_hq.obj";
 constexpr char kSkateTexturePath[] = "assets/textures/skateboard_texture.ppm";
+constexpr char kCharacterObjPath[] = "assets/models/character_hq.obj";
+constexpr char kEnvironmentObjPath[] = "assets/models/skatepark_hq.obj";
+constexpr char kSkyHdriTexturePath[] = "assets/textures/sky_hdri.ppm";
 
 constexpr int SKATEBOARD_TEX_W = 256;
 constexpr int SKATEBOARD_TEX_H = 256;
@@ -178,6 +182,7 @@ struct ObjTriangle
 {
   ObjFaceVertex vertex[3];
   Vec3 fallbackNormal {0.0f, 1.0f, 0.0f};
+  int materialIndex = -1;
 };
 
 struct ObjGroup
@@ -186,12 +191,22 @@ struct ObjGroup
   std::vector<ObjTriangle> triangles;
 };
 
+struct ObjMaterial
+{
+  std::string name;
+  Vec3 diffuse {0.76f, 0.76f, 0.78f};
+};
+
 struct ObjModel
 {
   std::vector<Vec3> positions;
   std::vector<std::array<float, 2>> texcoords;
   std::vector<Vec3> normals;
   std::vector<ObjGroup> groups;
+  std::vector<ObjMaterial> materials;
+  Vec3 minBounds {0.0f, 0.0f, 0.0f};
+  Vec3 maxBounds {0.0f, 0.0f, 0.0f};
+  bool hasBounds = false;
   GLuint textureId = 0;
   bool loaded = false;
 };
@@ -214,6 +229,12 @@ Player g_player;
 GameState g_state = GameState::Menu;
 ObjModel g_skateboardModel;
 bool g_skateboardModelFallback = true;
+ObjModel g_characterModel;
+ObjModel g_environmentModel;
+bool g_characterModelFallback = true;
+bool g_environmentModelFallback = true;
+GLuint g_skyHdriTextureId = 0;
+bool g_skyHdriReady = false;
 
 SDL_Window* g_window = nullptr;
 SDL_GLContext g_glContext = nullptr;
@@ -478,6 +499,45 @@ GLuint createFallbackSkateTexture()
   return textureId;
 }
 
+GLuint createFallbackSkyTexture()
+{
+  constexpr int kSkyW = 1024;
+  constexpr int kSkyH = 512;
+  std::vector<unsigned char> pixels(static_cast<size_t>(kSkyW * kSkyH * 3));
+  for (int y = 0; y < kSkyH; ++y)
+  {
+    const float v = static_cast<float>(y) / static_cast<float>(kSkyH - 1);
+    for (int x = 0; x < kSkyW; ++x)
+    {
+      const float u = static_cast<float>(x) / static_cast<float>(kSkyW - 1);
+      const float sunDx = u - 0.73f;
+      const float sunDy = v - 0.28f;
+      const float sun = std::exp(-(sunDx * sunDx + sunDy * sunDy) * 820.0f);
+      const float haze = std::exp(-(sunDx * sunDx + sunDy * sunDy) * 180.0f);
+
+      const float skyR = 0.08f + (1.0f - v) * 0.38f + sun * 1.8f + haze * 0.45f;
+      const float skyG = 0.16f + (1.0f - v) * 0.36f + sun * 1.35f + haze * 0.26f;
+      const float skyB = 0.35f + (1.0f - v) * 0.36f + sun * 0.9f;
+
+      const int idx = (y * kSkyW + x) * 3;
+      pixels[idx + 0] = static_cast<unsigned char>(std::clamp(skyR, 0.0f, 1.0f) * 255.0f);
+      pixels[idx + 1] = static_cast<unsigned char>(std::clamp(skyG, 0.0f, 1.0f) * 255.0f);
+      pixels[idx + 2] = static_cast<unsigned char>(std::clamp(skyB, 0.0f, 1.0f) * 255.0f);
+    }
+  }
+
+  GLuint textureId = 0;
+  glGenTextures(1, &textureId);
+  glBindTexture(GL_TEXTURE_2D, textureId);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, kSkyW, kSkyH, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+  return textureId;
+}
+
 bool parseObjIndex(const std::string& token, int count, int& out)
 {
   try
@@ -568,6 +628,143 @@ ObjGroup& getOrCreateObjGroup(ObjModel& model, const std::string& name)
   return model.groups.back();
 }
 
+std::string trimAscii(std::string value)
+{
+  const auto isSpace = [](unsigned char c)
+  {
+    return std::isspace(c) != 0;
+  };
+
+  value.erase(value.begin(), std::find_if(value.begin(), value.end(), [&](unsigned char c) { return !isSpace(c); }));
+  value.erase(std::find_if(value.rbegin(), value.rend(), [&](unsigned char c) { return !isSpace(c); }).base(), value.end());
+  return value;
+}
+
+void updateObjBounds(ObjModel& model, const Vec3& point)
+{
+  if (!model.hasBounds)
+  {
+    model.minBounds = point;
+    model.maxBounds = point;
+    model.hasBounds = true;
+    return;
+  }
+
+  model.minBounds.x = std::min(model.minBounds.x, point.x);
+  model.minBounds.y = std::min(model.minBounds.y, point.y);
+  model.minBounds.z = std::min(model.minBounds.z, point.z);
+  model.maxBounds.x = std::max(model.maxBounds.x, point.x);
+  model.maxBounds.y = std::max(model.maxBounds.y, point.y);
+  model.maxBounds.z = std::max(model.maxBounds.z, point.z);
+}
+
+void recomputeObjBounds(ObjModel& model)
+{
+  model.hasBounds = false;
+  for (const Vec3& v : model.positions)
+  {
+    updateObjBounds(model, v);
+  }
+}
+
+int findObjMaterialIndex(const ObjModel& model, const std::string& name)
+{
+  for (size_t i = 0; i < model.materials.size(); ++i)
+  {
+    if (model.materials[i].name == name)
+    {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+int getOrCreateObjMaterial(ObjModel& model, const std::string& name)
+{
+  const int existing = findObjMaterialIndex(model, name);
+  if (existing >= 0)
+  {
+    return existing;
+  }
+
+  model.materials.push_back({name, {0.76f, 0.76f, 0.78f}});
+  return static_cast<int>(model.materials.size() - 1);
+}
+
+bool loadObjMaterialLibrary(const std::filesystem::path& objPath, const std::string& rawLibPath, ObjModel& model)
+{
+  const std::string libPathTrimmed = trimAscii(rawLibPath);
+  if (libPathTrimmed.empty())
+  {
+    return false;
+  }
+
+  const std::filesystem::path mtlPath = objPath.parent_path() / libPathTrimmed;
+  std::ifstream mtlFile(mtlPath);
+  if (!mtlFile)
+  {
+    return false;
+  }
+
+  ObjMaterial* currentMaterial = nullptr;
+  std::string line;
+  while (std::getline(mtlFile, line))
+  {
+    if (!line.empty() && line.back() == '\r')
+    {
+      line.pop_back();
+    }
+    if (line.empty() || line[0] == '#')
+    {
+      continue;
+    }
+
+    std::stringstream ss(line);
+    std::string type;
+    ss >> type;
+
+    if (type == "newmtl")
+    {
+      std::string materialName;
+      std::getline(ss, materialName);
+      materialName = trimAscii(materialName);
+      if (materialName.empty())
+      {
+        currentMaterial = nullptr;
+        continue;
+      }
+      const int index = getOrCreateObjMaterial(model, materialName);
+      currentMaterial = &model.materials[index];
+    }
+    else if (type == "Kd" && currentMaterial)
+    {
+      ss >> currentMaterial->diffuse.x >> currentMaterial->diffuse.y >> currentMaterial->diffuse.z;
+      currentMaterial->diffuse.x = std::clamp(currentMaterial->diffuse.x, 0.0f, 1.0f);
+      currentMaterial->diffuse.y = std::clamp(currentMaterial->diffuse.y, 0.0f, 1.0f);
+      currentMaterial->diffuse.z = std::clamp(currentMaterial->diffuse.z, 0.0f, 1.0f);
+    }
+    else if (type == "map_Kd" && model.textureId == 0)
+    {
+      std::string textureRelPath;
+      std::getline(ss, textureRelPath);
+      textureRelPath = trimAscii(textureRelPath);
+      if (textureRelPath.empty())
+      {
+        continue;
+      }
+
+      const std::filesystem::path texturePath = mtlPath.parent_path() / textureRelPath;
+      GLuint importedTexture = 0;
+      if (loadPPMTexture(texturePath.string(), importedTexture))
+      {
+        model.textureId = importedTexture;
+      }
+    }
+  }
+
+  return true;
+}
+
 bool loadObjModel(const std::string& path, ObjModel& model)
 {
   std::ifstream file(path);
@@ -578,12 +775,18 @@ bool loadObjModel(const std::string& path, ObjModel& model)
   }
 
   model = {};
+  const std::filesystem::path objPath(path);
   std::string currentGroupName = "board";
   ObjGroup* currentGroup = &getOrCreateObjGroup(model, currentGroupName);
+  int currentMaterialIndex = -1;
 
   std::string line;
   while (std::getline(file, line))
   {
+    if (!line.empty() && line.back() == '\r')
+    {
+      line.pop_back();
+    }
     if (line.empty() || line[0] == '#')
     {
       continue;
@@ -598,6 +801,7 @@ bool loadObjModel(const std::string& path, ObjModel& model)
       Vec3 v;
       ss >> v.x >> v.y >> v.z;
       model.positions.push_back(v);
+      updateObjBounds(model, v);
     }
     else if (type == "vt")
     {
@@ -614,11 +818,25 @@ bool loadObjModel(const std::string& path, ObjModel& model)
     else if (type == "g" || type == "o")
     {
       ss >> currentGroupName;
+      currentGroupName = trimAscii(currentGroupName);
       if (currentGroupName.empty())
       {
         currentGroupName = "board";
       }
       currentGroup = &getOrCreateObjGroup(model, currentGroupName);
+    }
+    else if (type == "mtllib")
+    {
+      std::string libraryPath;
+      std::getline(ss, libraryPath);
+      loadObjMaterialLibrary(objPath, libraryPath, model);
+    }
+    else if (type == "usemtl")
+    {
+      std::string materialName;
+      std::getline(ss, materialName);
+      materialName = trimAscii(materialName);
+      currentMaterialIndex = materialName.empty() ? -1 : getOrCreateObjMaterial(model, materialName);
     }
     else if (type == "f")
     {
@@ -644,6 +862,7 @@ bool loadObjModel(const std::string& path, ObjModel& model)
         tri.vertex[0] = faceVertices[0];
         tri.vertex[1] = faceVertices[i];
         tri.vertex[2] = faceVertices[i + 1];
+        tri.materialIndex = currentMaterialIndex;
 
         const auto& a = tri.vertex[0];
         const auto& b = tri.vertex[1];
@@ -665,6 +884,10 @@ bool loadObjModel(const std::string& path, ObjModel& model)
   {
     std::fprintf(stderr, "Loaded skateboard model was empty: %s\n", path.c_str());
     return false;
+  }
+  if (!model.hasBounds)
+  {
+    recomputeObjBounds(model);
   }
 
   for (auto& group : model.groups)
@@ -696,6 +919,100 @@ bool hasObjGroup(const ObjModel& model, const char* name)
   return false;
 }
 
+bool hasSkateboardPartGroups(const ObjModel& model)
+{
+  return hasObjGroup(model, "Deck") ||
+    hasObjGroup(model, "deck") ||
+    hasObjGroup(model, "TruckFront") ||
+    hasObjGroup(model, "TruckRear") ||
+    hasObjGroup(model, "Truck") ||
+    hasObjGroup(model, "Wheel") ||
+    hasObjGroup(model, "WheelFL") ||
+    hasObjGroup(model, "WheelFR") ||
+    hasObjGroup(model, "WheelRL") ||
+    hasObjGroup(model, "WheelRR");
+}
+
+void normalizeFullSkateboardMesh(ObjModel& model)
+{
+  if (!model.hasBounds)
+  {
+    recomputeObjBounds(model);
+  }
+  if (!model.hasBounds)
+  {
+    return;
+  }
+
+  float minAxis[3] = {model.minBounds.x, model.minBounds.y, model.minBounds.z};
+  float maxAxis[3] = {model.maxBounds.x, model.maxBounds.y, model.maxBounds.z};
+  float spanAxis[3] = {
+    std::max(0.0001f, maxAxis[0] - minAxis[0]),
+    std::max(0.0001f, maxAxis[1] - minAxis[1]),
+    std::max(0.0001f, maxAxis[2] - minAxis[2]),
+  };
+  float centerAxis[3] = {
+    (minAxis[0] + maxAxis[0]) * 0.5f,
+    (minAxis[1] + maxAxis[1]) * 0.5f,
+    (minAxis[2] + maxAxis[2]) * 0.5f,
+  };
+
+  int lengthAxis = 0;
+  int heightAxis = 0;
+  for (int i = 1; i < 3; ++i)
+  {
+    if (spanAxis[i] > spanAxis[lengthAxis])
+    {
+      lengthAxis = i;
+    }
+    if (spanAxis[i] < spanAxis[heightAxis])
+    {
+      heightAxis = i;
+    }
+  }
+  int widthAxis = 3 - lengthAxis - heightAxis;
+  if (widthAxis < 0 || widthAxis > 2)
+  {
+    widthAxis = 1;
+  }
+
+  for (Vec3& p : model.positions)
+  {
+    const float src[3] = {p.x, p.y, p.z};
+    p.x = src[widthAxis] - centerAxis[widthAxis];
+    p.y = src[heightAxis] - centerAxis[heightAxis];
+    p.z = src[lengthAxis] - centerAxis[lengthAxis];
+  }
+  recomputeObjBounds(model);
+
+  const float rangeX = std::max(0.0001f, model.maxBounds.x - model.minBounds.x);
+  const float rangeY = std::max(0.0001f, model.maxBounds.y - model.minBounds.y);
+  const float rangeZ = std::max(0.0001f, model.maxBounds.z - model.minBounds.z);
+
+  const float targetWidth = kProceduralDeckWidth * 0.95f;
+  const float targetHeight = 0.66f;
+  const float targetLength = kProceduralDeckLength;
+  const float sx = targetWidth / rangeX;
+  const float sy = targetHeight / rangeY;
+  const float sz = targetLength / rangeZ;
+
+  for (Vec3& p : model.positions)
+  {
+    p.x *= sx;
+    p.y *= sy;
+    p.z *= sz;
+  }
+  recomputeObjBounds(model);
+
+  const float desiredBottom = -0.55f;
+  const float yShift = desiredBottom - model.minBounds.y;
+  for (Vec3& p : model.positions)
+  {
+    p.y += yShift;
+  }
+  recomputeObjBounds(model);
+}
+
 bool canGrindOnRail(const Obstacle& rail, const Vec3& playerPos, float playerSpeed)
 {
   if (!rail.rail || !rail.active)
@@ -723,11 +1040,50 @@ bool ensureSkateboardModelAssets()
   }
 
   g_skateboardModelFallback = false;
-  const std::string texturePath = locateAssetPath(kSkateTexturePath);
-  if (!loadPPMTexture(texturePath, g_skateboardModel.textureId))
+  const bool hasPartGroups = hasSkateboardPartGroups(g_skateboardModel);
+  if (!hasPartGroups)
   {
-    g_skateboardModel.textureId = createFallbackSkateTexture();
+    normalizeFullSkateboardMesh(g_skateboardModel);
   }
+
+  if (hasPartGroups && g_skateboardModel.textureId == 0)
+  {
+    const std::string texturePath = locateAssetPath(kSkateTexturePath);
+    if (!loadPPMTexture(texturePath, g_skateboardModel.textureId))
+    {
+      g_skateboardModel.textureId = createFallbackSkateTexture();
+    }
+  }
+  return true;
+}
+
+bool ensureObjAsset(const char* relativePath, ObjModel& model)
+{
+  const std::string modelPath = locateAssetPath(relativePath);
+  model = {};
+  if (!loadObjModel(modelPath, model))
+  {
+    model.loaded = false;
+    model.textureId = 0;
+    return false;
+  }
+  return true;
+}
+
+bool ensureHdriSkyTexture()
+{
+  const std::string texturePath = locateAssetPath(kSkyHdriTexturePath);
+  if (!loadPPMTexture(texturePath, g_skyHdriTextureId))
+  {
+    g_skyHdriTextureId = createFallbackSkyTexture();
+    g_skyHdriReady = false;
+    return false;
+  }
+
+  glBindTexture(GL_TEXTURE_2D, g_skyHdriTextureId);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  g_skyHdriReady = true;
   return true;
 }
 
@@ -744,12 +1100,18 @@ void drawObjModel(const ObjModel& model, const char* targetGroup = nullptr, bool
     glDisable(GL_CULL_FACE);
   }
 
+  const GLboolean textureWasEnabled = glIsEnabled(GL_TEXTURE_2D);
   const bool hasTexture = (model.textureId != 0) && useTexture;
+  const bool applyMaterialColors = !hasTexture && !model.materials.empty();
   if (hasTexture)
   {
     glEnable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, model.textureId);
     glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+  }
+  else if (textureWasEnabled)
+  {
+    glDisable(GL_TEXTURE_2D);
   }
 
   const std::string selected = targetGroup ? targetGroup : "";
@@ -763,6 +1125,16 @@ void drawObjModel(const ObjModel& model, const char* targetGroup = nullptr, bool
     glBegin(GL_TRIANGLES);
     for (const auto& tri : group.triangles)
     {
+      if (applyMaterialColors)
+      {
+        Vec3 triColor{0.76f, 0.76f, 0.78f};
+        if (tri.materialIndex >= 0 && tri.materialIndex < static_cast<int>(model.materials.size()))
+        {
+          triColor = model.materials[tri.materialIndex].diffuse;
+        }
+        glColor3f(triColor.x, triColor.y, triColor.z);
+      }
+
       for (int i = 0; i < 3; ++i)
       {
         const auto& fv = tri.vertex[i];
@@ -799,6 +1171,10 @@ void drawObjModel(const ObjModel& model, const char* targetGroup = nullptr, bool
   if (hasTexture)
   {
     glDisable(GL_TEXTURE_2D);
+  }
+  else if (textureWasEnabled)
+  {
+    glEnable(GL_TEXTURE_2D);
   }
   if (cullWasEnabled)
   {
@@ -1464,6 +1840,64 @@ void drawSkyGradient(float intensity)
   glEnable(GL_DEPTH_TEST);
 }
 
+void drawHdriSkyDome(const Vec3& center)
+{
+  if (!g_skyHdriTextureId)
+  {
+    return;
+  }
+
+  glDisable(GL_LIGHTING);
+  glDisable(GL_FOG);
+  glDisable(GL_CULL_FACE);
+  glDepthMask(GL_FALSE);
+
+  glEnable(GL_TEXTURE_2D);
+  glBindTexture(GL_TEXTURE_2D, g_skyHdriTextureId);
+  glColor3f(1.0f, 1.0f, 1.0f);
+
+  glPushMatrix();
+  glTranslatef(center.x, center.y, center.z);
+  glRotatef(nowSeconds() * 0.65f, 0.0f, 1.0f, 0.0f);
+  glScalef(-1.0f, 1.0f, 1.0f);
+
+  GLUquadric* q = gluNewQuadric();
+  gluQuadricTexture(q, GL_TRUE);
+  gluQuadricNormals(q, GLU_SMOOTH);
+  gluSphere(q, 920.0, 54, 34);
+  gluDeleteQuadric(q);
+  glPopMatrix();
+
+  glDepthMask(GL_TRUE);
+  glEnable(GL_CULL_FACE);
+  glEnable(GL_FOG);
+  glEnable(GL_LIGHTING);
+}
+
+bool beginHdriReflection(float mix)
+{
+  if (!g_skyHdriTextureId || mix <= 0.0f)
+  {
+    return false;
+  }
+
+  glEnable(GL_TEXTURE_2D);
+  glBindTexture(GL_TEXTURE_2D, g_skyHdriTextureId);
+  glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+  glTexGeni(GL_S, GL_TEXTURE_GEN_MODE, GL_SPHERE_MAP);
+  glTexGeni(GL_T, GL_TEXTURE_GEN_MODE, GL_SPHERE_MAP);
+  glEnable(GL_TEXTURE_GEN_S);
+  glEnable(GL_TEXTURE_GEN_T);
+  glColor4f(0.90f + mix * 0.08f, 0.90f + mix * 0.08f, 0.94f + mix * 0.06f, 1.0f);
+  return true;
+}
+
+void endHdriReflection()
+{
+  glDisable(GL_TEXTURE_GEN_S);
+  glDisable(GL_TEXTURE_GEN_T);
+}
+
 void drawSolidCube(float s)
 {
   const float h = s * 0.5f;
@@ -1592,6 +2026,7 @@ void drawTruck(float z)
   glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, deckSteelDiffuse);
   glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, deckSteelSpec);
   glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 36.0f);
+  const bool reflectionActive = beginHdriReflection(0.82f);
 
   glPushMatrix();
   glTranslatef(0.0f, -0.06f, 0.0f);
@@ -1694,6 +2129,10 @@ void drawTruck(float z)
     }
   }
 
+  if (reflectionActive)
+  {
+    endHdriReflection();
+  }
   glPopMatrix();
 }
 
@@ -1978,6 +2417,7 @@ void drawRealWheel(float spin, float flex)
 
   glColor3f(0.06f, 0.06f, 0.08f);
   drawSolidTorus(0.050f, kProceduralWheelRadius, 22, 44);
+  const bool reflectionActive = beginHdriReflection(0.65f);
 
   glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT, edgeAmbient);
   glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, edgeDiffuse);
@@ -2100,6 +2540,10 @@ void drawRealWheel(float spin, float flex)
   drawSolidSphere(0.055f, 12, 8);
   glPopMatrix();
 
+  if (reflectionActive)
+  {
+    endHdriReflection();
+  }
   glPopMatrix();
 }
 
@@ -2183,6 +2627,18 @@ void drawWorld()
   {
     const float z0 = static_cast<float>(centerSegment + i) * SEGMENT_LENGTH;
     drawGroundSegment(z0);
+  }
+
+  if (g_environmentModel.loaded && !g_environmentModelFallback)
+  {
+    constexpr float kEnvSpan = 120.0f;
+    const float anchor = std::round(g_player.position.z / kEnvSpan) * kEnvSpan;
+    const float y = terrainHeight(0.0f, anchor) - 0.05f;
+    glPushMatrix();
+    glTranslatef(0.0f, y, anchor);
+    glColor3f(0.74f, 0.77f, 0.80f);
+    drawObjModel(g_environmentModel, nullptr, false);
+    glPopMatrix();
   }
 }
 
@@ -2303,160 +2759,191 @@ void drawPlayer()
 
   const bool hasDeckGroup = hasObjGroup(g_skateboardModel, "Deck") || hasObjGroup(g_skateboardModel, "deck");
   const char* deckGroup = hasObjGroup(g_skateboardModel, "Deck") ? "Deck" : "deck";
-
-  glPushMatrix();
-  glTranslatef(0.0f, deckHeight, 0.0f);
-  if (!useProceduralBoard && !g_skateboardModelFallback && g_skateboardModel.loaded && hasDeckGroup)
-  {
-    drawObjModel(g_skateboardModel, deckGroup, true);
-  }
-  else
-  {
-    drawDeck(deckFlex);
-  }
-  glPopMatrix();
-
-  const std::array<float, 2> truckZ = {truckZOffset, -truckZOffset};
-  const std::array<float, 2> wheelZ = {wheelZOffset, -wheelZOffset};
-  const float wheelX = useProceduralBoard ? procWheelX : 0.35f;
-
   const bool hasTruckFront = hasObjGroup(g_skateboardModel, "TruckFront");
   const bool hasTruckRear = hasObjGroup(g_skateboardModel, "TruckRear");
   const bool hasTruckGroup = hasObjGroup(g_skateboardModel, "Truck");
+  const bool hasExplicitTrucks = hasTruckFront || hasTruckRear;
+  const bool hasAnyTrucks = hasExplicitTrucks || hasTruckGroup;
   const bool hasWheelGroup = hasObjGroup(g_skateboardModel, "Wheel");
   const bool hasWheelFL = hasObjGroup(g_skateboardModel, "WheelFL");
   const bool hasWheelFR = hasObjGroup(g_skateboardModel, "WheelFR");
   const bool hasWheelRL = hasObjGroup(g_skateboardModel, "WheelRL");
   const bool hasWheelRR = hasObjGroup(g_skateboardModel, "WheelRR");
+  const bool hasExplicitWheels = hasWheelFL || hasWheelFR || hasWheelRL || hasWheelRR;
+  const bool hasAnyWheels = hasExplicitWheels || hasWheelGroup;
 
-  auto drawObjTruckAtZ = [&](float z, const char* groupName)
+  const bool hasNamedPartGroups = hasDeckGroup || hasAnyTrucks || hasAnyWheels;
+  const bool drawFullImportedBoard =
+    !useProceduralBoard &&
+    !g_skateboardModelFallback &&
+    g_skateboardModel.loaded &&
+    !hasNamedPartGroups;
+
+  if (drawFullImportedBoard)
   {
     glPushMatrix();
-    glTranslatef(0.0f, useProceduralBoard ? truckY : (deckHeight - 0.24f), z);
-    glColor3f(0.17f, 0.17f, 0.21f);
-    drawObjModel(g_skateboardModel, groupName, false);
+    glTranslatef(0.0f, deckHeight, 0.0f);
+    const float flexScaleY = std::clamp(1.0f + deckFlex * 0.5f, 0.92f, 1.0f);
+    glScalef(1.0f, flexScaleY, 1.0f);
+    drawObjModel(g_skateboardModel, nullptr, true);
     glPopMatrix();
-  };
-
-  auto drawObjWheelAt = [&](float x, float z, const char* groupName)
-  {
-    glPushMatrix();
-    glTranslatef(x, useProceduralBoard ? wheelY : (deckHeight - 0.62f), z);
-    glRotatef(90.0f, 0.0f, 1.0f, 0.0f);
-    glRotatef(wheelSpin, 0.0f, 0.0f, 1.0f);
-    glColor3f(0.14f, 0.14f, 0.18f);
-    drawObjModel(g_skateboardModel, groupName, false);
-    glPopMatrix();
-  };
-
-  const bool hasExplicitTrucks = hasTruckFront || hasTruckRear;
-  const bool hasAnyTrucks = hasExplicitTrucks || hasTruckGroup;
-  if (!useProceduralBoard && hasAnyTrucks && !g_skateboardModelFallback && g_skateboardModel.loaded)
-  {
-    if (hasTruckGroup && !hasExplicitTrucks)
-    {
-      for (const float z : truckZ)
-      {
-        drawObjTruckAtZ(z, "Truck");
-      }
-    }
-    else
-    {
-      if (hasTruckFront)
-      {
-        drawObjTruckAtZ(truckZ[0], "TruckFront");
-      }
-      if (hasTruckRear)
-      {
-        drawObjTruckAtZ(truckZ[1], "TruckRear");
-      }
-    }
   }
   else
   {
-    for (const float z : truckZ)
+    glPushMatrix();
+    glTranslatef(0.0f, deckHeight, 0.0f);
+    if (!useProceduralBoard && !g_skateboardModelFallback && g_skateboardModel.loaded && hasDeckGroup)
+    {
+      drawObjModel(g_skateboardModel, deckGroup, true);
+    }
+    else
+    {
+      drawDeck(deckFlex);
+    }
+    glPopMatrix();
+
+    const std::array<float, 2> truckZ = {truckZOffset, -truckZOffset};
+    const std::array<float, 2> wheelZ = {wheelZOffset, -wheelZOffset};
+    const float wheelX = useProceduralBoard ? procWheelX : 0.35f;
+
+    auto drawObjTruckAtZ = [&](float z, const char* groupName)
     {
       glPushMatrix();
-      glTranslatef(0.0f, truckY, z);
-      drawTruck(0.0f);
+      glTranslatef(0.0f, useProceduralBoard ? truckY : (deckHeight - 0.24f), z);
+      glColor3f(0.17f, 0.17f, 0.21f);
+      drawObjModel(g_skateboardModel, groupName, false);
       glPopMatrix();
-    }
-  }
+    };
 
-  const bool hasExplicitWheels = hasWheelFL || hasWheelFR || hasWheelRL || hasWheelRR;
-  const bool hasAnyWheels = hasExplicitWheels || hasWheelGroup;
-  if (!useProceduralBoard && hasAnyWheels && !g_skateboardModelFallback && g_skateboardModel.loaded)
-  {
-    if (hasWheelGroup && !hasExplicitWheels)
+    auto drawObjWheelAt = [&](float x, float z, const char* groupName)
     {
-      for (const float z : wheelZ)
+      glPushMatrix();
+      glTranslatef(x, useProceduralBoard ? wheelY : (deckHeight - 0.62f), z);
+      glRotatef(90.0f, 0.0f, 1.0f, 0.0f);
+      glRotatef(wheelSpin, 0.0f, 0.0f, 1.0f);
+      glColor3f(0.14f, 0.14f, 0.18f);
+      drawObjModel(g_skateboardModel, groupName, false);
+      glPopMatrix();
+    };
+
+    if (!useProceduralBoard && hasAnyTrucks && !g_skateboardModelFallback && g_skateboardModel.loaded)
+    {
+      if (hasTruckGroup && !hasExplicitTrucks)
       {
-        for (float x : {-wheelX, wheelX})
+        for (const float z : truckZ)
         {
-          drawObjWheelAt(x, z, "Wheel");
+          drawObjTruckAtZ(z, "Truck");
+        }
+      }
+      else
+      {
+        if (hasTruckFront)
+        {
+          drawObjTruckAtZ(truckZ[0], "TruckFront");
+        }
+        if (hasTruckRear)
+        {
+          drawObjTruckAtZ(truckZ[1], "TruckRear");
         }
       }
     }
     else
     {
-      if (hasWheelFL)
-      {
-        drawObjWheelAt(-wheelX, wheelZ[0], "WheelFL");
-      }
-      if (hasWheelFR)
-      {
-        drawObjWheelAt(wheelX, wheelZ[0], "WheelFR");
-      }
-      if (hasWheelRL)
-      {
-        drawObjWheelAt(-wheelX, wheelZ[1], "WheelRL");
-      }
-      if (hasWheelRR)
-      {
-        drawObjWheelAt(wheelX, wheelZ[1], "WheelRR");
-      }
-    }
-  }
-  else
-  {
-    for (const float z : wheelZ)
-    {
-      for (float x : {-wheelX, wheelX})
+      for (const float z : truckZ)
       {
         glPushMatrix();
-        glTranslatef(x, wheelY, z);
-        glRotatef(90.0f, 0.0f, 1.0f, 0.0f);
-        drawRealWheel(wheelSpin, deckFlex);
+        glTranslatef(0.0f, truckY, z);
+        drawTruck(0.0f);
+        glPopMatrix();
+      }
+    }
+
+    if (!useProceduralBoard && hasAnyWheels && !g_skateboardModelFallback && g_skateboardModel.loaded)
+    {
+      if (hasWheelGroup && !hasExplicitWheels)
+      {
+        for (const float z : wheelZ)
+        {
+          for (float x : {-wheelX, wheelX})
+          {
+            drawObjWheelAt(x, z, "Wheel");
+          }
+        }
+      }
+      else
+      {
+        if (hasWheelFL)
+        {
+          drawObjWheelAt(-wheelX, wheelZ[0], "WheelFL");
+        }
+        if (hasWheelFR)
+        {
+          drawObjWheelAt(wheelX, wheelZ[0], "WheelFR");
+        }
+        if (hasWheelRL)
+        {
+          drawObjWheelAt(-wheelX, wheelZ[1], "WheelRL");
+        }
+        if (hasWheelRR)
+        {
+          drawObjWheelAt(wheelX, wheelZ[1], "WheelRR");
+        }
+      }
+    }
+    else
+    {
+      for (const float z : wheelZ)
+      {
+        glPushMatrix();
+        for (float x : {-wheelX, wheelX})
+        {
+          glPushMatrix();
+          glTranslatef(x, wheelY, z);
+          glRotatef(90.0f, 0.0f, 1.0f, 0.0f);
+          drawRealWheel(wheelSpin, deckFlex);
+          glPopMatrix();
+        }
         glPopMatrix();
       }
     }
   }
 
-  // Rider silhouette
+  // Rider high-fidelity asset (fallback to silhouette if missing).
   glPushMatrix();
-  glTranslatef(0.0f, deckHeight + 0.52f, 0.04f);
-  glRotatef(-12.0f, 1.0f, 0.0f, 0.0f);
+  glTranslatef(0.0f, deckHeight + 0.03f, 0.06f);
+  glRotatef(-6.0f, 1.0f, 0.0f, 0.0f);
+  if (g_characterModel.loaded && !g_characterModelFallback)
+  {
+    glScalef(0.62f, 0.62f, 0.62f);
+    glColor3f(0.86f, 0.89f, 0.95f);
+    drawObjModel(g_characterModel, nullptr, false);
+  }
+  else
+  {
+    glTranslatef(0.0f, 0.52f, 0.04f);
+    glRotatef(-12.0f, 1.0f, 0.0f, 0.0f);
 
-  glPushMatrix();
-  glTranslatef(0.0f, 0.30f, 0.02f);
-  glScalef(0.34f, 0.25f, 0.24f);
-  glColor3f(0.06f, 0.08f, 0.11f);
-  drawSolidCube(1.0f);
-  glPopMatrix();
+    glPushMatrix();
+    glTranslatef(0.0f, 0.30f, 0.02f);
+    glScalef(0.34f, 0.25f, 0.24f);
+    glColor3f(0.06f, 0.08f, 0.11f);
+    drawSolidCube(1.0f);
+    glPopMatrix();
 
-  glPushMatrix();
-  glTranslatef(0.0f, 0.58f, 0.12f);
-  glScalef(0.19f, 0.34f, 0.14f);
-  glColor3f(0.06f, 0.07f, 0.10f);
-  drawSolidCube(1.0f);
-  glPopMatrix();
+    glPushMatrix();
+    glTranslatef(0.0f, 0.58f, 0.12f);
+    glScalef(0.19f, 0.34f, 0.14f);
+    glColor3f(0.06f, 0.07f, 0.10f);
+    drawSolidCube(1.0f);
+    glPopMatrix();
 
-  glPushMatrix();
-  glTranslatef(0.0f, 0.86f, 0.14f);
-  glScalef(0.26f, 0.16f, 0.22f);
-  glColor3f(0.98f, 0.95f, 0.85f);
-  drawSolidSphere(0.16f, 12, 8);
-  glPopMatrix();
+    glPushMatrix();
+    glTranslatef(0.0f, 0.86f, 0.14f);
+    glScalef(0.26f, 0.16f, 0.22f);
+    glColor3f(0.98f, 0.95f, 0.85f);
+    drawSolidSphere(0.16f, 12, 8);
+    glPopMatrix();
+  }
   glPopMatrix();
 
   glPopMatrix();
@@ -2648,20 +3135,45 @@ void setupSceneLighting()
   glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
 
   const float t = nowSeconds() * 0.1f;
-  const float amb = 0.22f + 0.06f * std::sin(t * 0.7f);
-  const GLfloat ambient[] = { amb * 0.5f, amb * 0.56f, amb * 0.65f, 1.0f };
+  const float amb = g_skyHdriReady ? (0.36f + 0.03f * std::sin(t * 0.45f)) : (0.22f + 0.06f * std::sin(t * 0.7f));
+  const GLfloat ambient[] = {
+    amb * (g_skyHdriReady ? 0.62f : 0.50f),
+    amb * (g_skyHdriReady ? 0.68f : 0.56f),
+    amb * (g_skyHdriReady ? 0.78f : 0.65f),
+    1.0f
+  };
   glLightModelfv(GL_LIGHT_MODEL_AMBIENT, ambient);
 
-  GLfloat lightPos0[] = { -8.0f + std::sin(t) * 2.0f, 18.0f, 12.0f + std::cos(t * 0.8f) * 4.0f, 1.0f };
-  GLfloat lightDiffuse0[] = { 0.90f, 0.93f, 1.0f, 1.0f };
-  GLfloat lightSpecular0[] = { 0.30f, 0.33f, 0.48f, 1.0f };
+  GLfloat lightPos0[] = { -8.0f + std::sin(t) * 2.0f, g_skyHdriReady ? 26.0f : 18.0f, 12.0f + std::cos(t * 0.8f) * 4.0f, 1.0f };
+  GLfloat lightDiffuse0[] = {
+    g_skyHdriReady ? 1.0f : 0.90f,
+    g_skyHdriReady ? 0.98f : 0.93f,
+    g_skyHdriReady ? 0.95f : 1.0f,
+    1.0f
+  };
+  GLfloat lightSpecular0[] = {
+    g_skyHdriReady ? 0.55f : 0.30f,
+    g_skyHdriReady ? 0.54f : 0.33f,
+    g_skyHdriReady ? 0.62f : 0.48f,
+    1.0f
+  };
   glLightfv(GL_LIGHT0, GL_POSITION, lightPos0);
   glLightfv(GL_LIGHT0, GL_DIFFUSE, lightDiffuse0);
   glLightfv(GL_LIGHT0, GL_SPECULAR, lightSpecular0);
 
-  GLfloat lightPos1[] = { 4.0f, 10.0f, -12.0f, 1.0f };
-  GLfloat lightDiffuse1[] = { 0.20f, 0.18f, 0.15f, 1.0f };
-  GLfloat lightSpecular1[] = { 0.16f, 0.14f, 0.16f, 1.0f };
+  GLfloat lightPos1[] = { 4.0f, g_skyHdriReady ? 16.0f : 10.0f, -12.0f, 1.0f };
+  GLfloat lightDiffuse1[] = {
+    g_skyHdriReady ? 0.28f : 0.20f,
+    g_skyHdriReady ? 0.30f : 0.18f,
+    g_skyHdriReady ? 0.34f : 0.15f,
+    1.0f
+  };
+  GLfloat lightSpecular1[] = {
+    g_skyHdriReady ? 0.22f : 0.16f,
+    g_skyHdriReady ? 0.24f : 0.14f,
+    g_skyHdriReady ? 0.28f : 0.16f,
+    1.0f
+  };
   glLightfv(GL_LIGHT1, GL_POSITION, lightPos1);
   glLightfv(GL_LIGHT1, GL_DIFFUSE, lightDiffuse1);
   glLightfv(GL_LIGHT1, GL_SPECULAR, lightSpecular1);
@@ -2669,13 +3181,14 @@ void setupSceneLighting()
 
 void renderScene()
 {
+  setFlashColor();
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
   glEnable(GL_DEPTH_TEST);
-  drawSkyGradient(1.0f - g_player.invuln * 0.3f);
-  setupSceneLighting();
-
-  setFlashColor();
+  if (!g_skyHdriTextureId)
+  {
+    drawSkyGradient(1.0f - g_player.invuln * 0.3f);
+  }
 
   glMatrixMode(GL_PROJECTION);
   glLoadIdentity();
@@ -2702,6 +3215,12 @@ void renderScene()
             focusY + shake * 0.4f,
             focusZ,
             lean, 1.0f, 0.0f);
+
+  if (g_skyHdriTextureId)
+  {
+    drawHdriSkyDome({camX, camY, camZ});
+  }
+  setupSceneLighting();
 
   drawWorld();
 
@@ -2873,6 +3392,9 @@ void setupGL()
 void initGame()
 {
   ensureSkateboardModelAssets();
+  g_characterModelFallback = !ensureObjAsset(kCharacterObjPath, g_characterModel);
+  g_environmentModelFallback = !ensureObjAsset(kEnvironmentObjPath, g_environmentModel);
+  ensureHdriSkyTexture();
   makeWorld();
   resetRun();
   showOverlay("ONESHOT SKATE", "Press Enter to Start");
@@ -2886,6 +3408,21 @@ void shutdownGameAssets()
   {
     glDeleteTextures(1, &g_skateboardModel.textureId);
     g_skateboardModel.textureId = 0;
+  }
+  if (g_characterModel.textureId)
+  {
+    glDeleteTextures(1, &g_characterModel.textureId);
+    g_characterModel.textureId = 0;
+  }
+  if (g_environmentModel.textureId)
+  {
+    glDeleteTextures(1, &g_environmentModel.textureId);
+    g_environmentModel.textureId = 0;
+  }
+  if (g_skyHdriTextureId)
+  {
+    glDeleteTextures(1, &g_skyHdriTextureId);
+    g_skyHdriTextureId = 0;
   }
 }
 
