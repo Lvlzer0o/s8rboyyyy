@@ -5,9 +5,28 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(PkgConfig REQUIRED)
-find_package(OpenGL REQUIRED)
-pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
-pkg_check_modules(SDL2_TTF REQUIRED IMPORTED_TARGET SDL2_ttf)
+
+set(OpenGL_GL_PREFERENCE GLVND)
+find_package(OpenGL QUIET)
+if (NOT OpenGL_FOUND)
+  message(FATAL_ERROR
+    "OpenGL development libraries were not found. "
+    "On Ubuntu/Debian install: libgl1-mesa-dev libglu1-mesa-dev")
+endif()
+
+pkg_check_modules(SDL2 QUIET IMPORTED_TARGET sdl2)
+if (NOT SDL2_FOUND)
+  message(FATAL_ERROR
+    "SDL2 development package not found. "
+    "On Ubuntu/Debian install: libsdl2-dev")
+endif()
+
+pkg_check_modules(SDL2_TTF QUIET IMPORTED_TARGET SDL2_ttf)
+if (NOT SDL2_TTF_FOUND)
+  message(FATAL_ERROR
+    "SDL2_ttf development package not found. "
+    "On Ubuntu/Debian install: libsdl2-ttf-dev")
+endif()
 
 add_executable(oneshot-skate
   src/main.cpp

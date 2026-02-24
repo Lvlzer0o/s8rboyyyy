@@ -249,7 +249,7 @@ struct AgentOrchestrator
     eventLog.push_back(event);
     if (eventLog.size() > maxLogEntries)
     {
-      eventLog.pop_front();
+      eventLog.erase(eventLog.begin());
     }
   }
 
