@@ -11,11 +11,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <deque>
 #include <fstream>
-#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include "player.hpp"
+#include "world.hpp"
 
 namespace
 {
@@ -25,34 +28,13 @@ constexpr float TAU = PI * 2.0f;
 constexpr float DEG = 180.0f / PI;
 
 constexpr float WORLD_TIME = 180.0f;
-constexpr float GRAVITY = 33.0f;
-constexpr float ACCEL = 34.0f;
-constexpr float BRAKE = 0.88f;
-constexpr float DRAG_GROUND = 0.985f;
-constexpr float DRAG_AIR = 0.996f;
-constexpr float MAX_SPEED = 30.0f;
-constexpr float TURN_RATE = 1.9f;
-constexpr float JUMP_SPEED = 16.0f;
-constexpr float GRIND_ENTRY_SPEED = 6.5f;
-constexpr float GRIND_CATCH_RADIUS = 1.42f;
-constexpr float GRIND_Y_TOLERANCE = 0.72f;
 constexpr float GRIND_ENTRY_BONUS = 150;
 constexpr float GRIND_EXIT_BONUS = 85;
 constexpr float GRIND_SCORE_RATE = 140.0f;
 constexpr float GRIND_SPEED_MULT = 1.012f;
-constexpr float BOARD_FLEX_LIMIT = 0.056f;
-constexpr float BOARD_FLEX_RECOVERY = 7.0f;
-constexpr float BOARD_AIR_FLEX = -0.028f;
-constexpr float BOARD_LANDING_FLEX_SCALE = 0.0068f;
-constexpr float BOARD_RADIUS = 0.85f;
-constexpr float BOARD_HALF_WIDTH = 44.0f;
 constexpr float SEGMENT_LENGTH = 180.0f;
 constexpr int SEGMENT_COUNT = 12;
 constexpr int GROUND_SAMPLES = 72;
-constexpr float OBSTACLE_RECYCLE_OFFSET = 260.0f;
-constexpr float COIN_RECYCLE_OFFSET = 180.0f;
-constexpr int OBSTACLE_COUNT = 34;
-constexpr int COIN_COUNT = 22;
 
 constexpr float SKY_R1 = 0.08f;
 constexpr float SKY_G1 = 0.16f;
@@ -81,95 +63,6 @@ constexpr char kSkyHdriTexturePath[] = "assets/textures/sky_hdri.ppm";
 
 constexpr int SKATEBOARD_TEX_W = 256;
 constexpr int SKATEBOARD_TEX_H = 256;
-
-struct Vec3
-{
-  float x = 0.0f;
-  float y = 0.0f;
-  float z = 0.0f;
-
-  Vec3() = default;
-  Vec3(float px, float py, float pz) : x(px), y(py), z(pz) {}
-
-  Vec3 operator+(const Vec3& o) const { return {x + o.x, y + o.y, z + o.z}; }
-  Vec3 operator-(const Vec3& o) const { return {x - o.x, y - o.y, z - o.z}; }
-  Vec3 operator*(float s) const { return {x * s, y * s, z * s}; }
-  Vec3& operator+=(const Vec3& o)
-  {
-    x += o.x;
-    y += o.y;
-    z += o.z;
-    return *this;
-  }
-};
-
-inline float length2D(const Vec3& v)
-{
-  return std::sqrt(v.x * v.x + v.z * v.z);
-}
-
-inline float length3D(const Vec3& v)
-{
-  return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-}
-
-inline Vec3 cross(const Vec3& a, const Vec3& b)
-{
-  return {
-    a.y * b.z - a.z * b.y,
-    a.z * b.x - a.x * b.z,
-    a.x * b.y - a.y * b.x,
-  };
-}
-
-inline Vec3 safeNormalize(const Vec3& v)
-{
-  const float len = length3D(v);
-  if (len <= 0.00001f)
-  {
-    return {0.0f, 1.0f, 0.0f};
-  }
-  return {v.x / len, v.y / len, v.z / len};
-}
-
-struct Player
-{
-  Vec3 position {0.0f, 4.0f, 0.0f};
-  Vec3 velocity {0.0f, 0.0f, 6.0f};
-  float yaw = 0.0f;
-  bool grounded = false;
-  float airTime = 0.0f;
-  bool grinding = false;
-  int grindCombo = 0;
-  float grindTime = 0.0f;
-  float grindHintTimer = 0.0f;
-  float grindScoreCarry = 0.0f;
-  int currentGrindIndex = -1;
-  float deckFlex = 0.0f;
-
-  int lives = 3;
-  int score = 0;
-  float distance = 0.0f;
-  float invuln = 0.0f;
-};
-
-struct Obstacle
-{
-  Vec3 position;
-  float radius = 1.0f;
-  bool rail = false;
-  bool active = true;
-  float hitCooldown = 0.0f;
-};
-
-struct Coin
-{
-  Vec3 position;
-  bool active = true;
-  float spin = 1.0f;
-  float phase = 0.0f;
-  float radius = 0.7f;
-};
 
 struct ObjFaceVertex
 {
@@ -240,7 +133,7 @@ struct RenderJob
 struct AgentOrchestrator
 {
   std::vector<AgentNode> agents;
-  std::vector<std::string> eventLog;
+  std::deque<std::string> eventLog;
   size_t maxLogEntries = 14;
   bool initialized = false;
 
@@ -393,10 +286,8 @@ enum class GameState
   Win,
 };
 
-std::vector<Obstacle> g_obstacles;
-std::vector<Coin> g_coins;
+WorldState g_world;
 
-Player g_player;
 GameState g_state = GameState::Menu;
 ObjModel g_skateboardModel;
 bool g_skateboardModelFallback = true;
@@ -433,20 +324,6 @@ AgentOrchestrator g_agentOrchestrator;
 
 TTF_Font* g_font = nullptr;
 
-std::mt19937 g_rng{std::random_device{}()};
-
-float rand01()
-{
-  static std::uniform_real_distribution<float> d(0.0f, 1.0f);
-  return d(g_rng);
-}
-
-float randRange(float min, float max)
-{
-  std::uniform_real_distribution<float> d(min, max);
-  return d(g_rng);
-}
-
 float terrainHeight(float x, float z)
 {
   return std::sin(z * 0.05f) * 1.2f +
@@ -467,6 +344,16 @@ Vec3 terrainNormal(float x, float z)
   Vec3 n{-dX, 1.0f, -dZ};
   float invLen = 1.0f / (std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z));
   return {n.x * invLen, n.y * invLen, n.z * invLen};
+}
+
+float olliePopEnvelope(float timer)
+{
+  if (timer <= 0.0f)
+  {
+    return 0.0f;
+  }
+  const float t = std::clamp(1.0f - (timer / OLLIE_POP_TIME), 0.0f, 1.0f);
+  return std::sin(t * PI);
 }
 
 float nowSeconds()
@@ -1185,21 +1072,6 @@ void normalizeFullSkateboardMesh(ObjModel& model)
   recomputeObjBounds(model);
 }
 
-bool canGrindOnRail(const Obstacle& rail, const Vec3& playerPos, float playerSpeed)
-{
-  if (!rail.rail || !rail.active)
-  {
-    return false;
-  }
-
-  const float dx = playerPos.x - rail.position.x;
-  const float dz = playerPos.z - rail.position.z;
-  const float horizDist = std::sqrt(dx * dx + dz * dz);
-  const float yDiff = std::fabs(playerPos.y - rail.position.y);
-  const float radiusGate = rail.radius + GRIND_CATCH_RADIUS;
-  return horizDist <= radiusGate && yDiff <= GRIND_Y_TOLERANCE && playerSpeed >= GRIND_ENTRY_SPEED;
-}
-
 bool ensureSkateboardModelAssets()
 {
   const std::string modelPath = locateAssetPath(kSkateObjPath);
@@ -1500,53 +1372,9 @@ void showOverlay(const std::string& title, const std::string& hint)
   g_overlayHint = hint;
 }
 
-void placeObstacleAhead(Obstacle& obstacle)
-{
-  const float ahead = (static_cast<float>(g_obstacles.size()) + 1.0f) * 12.0f;
-  const float targetZ = g_player.position.z + (SEGMENT_LENGTH * 0.5f) + randRange(0.0f, OBSTACLE_RECYCLE_OFFSET) + ahead;
-  float x = (rand01() * 2.0f - 1.0f) * (BOARD_HALF_WIDTH * 0.78f);
-  x = std::clamp(x, -BOARD_HALF_WIDTH + 4.0f, BOARD_HALF_WIDTH - 4.0f);
-
-  const float y = terrainHeight(x, targetZ);
-  obstacle.position = {x, y, targetZ};
-  obstacle.active = true;
-  obstacle.hitCooldown = 0.0f;
-  obstacle.rail = rand01() < 0.2f;
-  obstacle.radius = obstacle.rail ? 1.25f : 1.0f;
-}
-
-void placeCoinAhead(Coin& coin)
-{
-  const float z = g_player.position.z + randRange(SEGMENT_LENGTH, COIN_RECYCLE_OFFSET) + 12.0f;
-  const float x = (rand01() * 2.0f - 1.0f) * (BOARD_HALF_WIDTH * 0.65f);
-  const float y = terrainHeight(x, z) + 1.2f;
-  coin.position = {x, y, z};
-  coin.active = true;
-  coin.spin = 1.2f + randRange(0.0f, 1.2f);
-  coin.phase = randRange(0.0f, static_cast<float>(2.0f * PI));
-}
-
 void makeWorld()
 {
-  g_obstacles.clear();
-  g_coins.clear();
-
-  g_obstacles.reserve(OBSTACLE_COUNT);
-  g_coins.reserve(COIN_COUNT);
-
-  for (int i = 0; i < OBSTACLE_COUNT; ++i)
-  {
-    Obstacle o;
-    placeObstacleAhead(o);
-    g_obstacles.push_back(o);
-  }
-
-  for (int i = 0; i < COIN_COUNT; ++i)
-  {
-    Coin c;
-    placeCoinAhead(c);
-    g_coins.push_back(c);
-  }
+  initializeWorld(g_world, g_player.position);
 }
 
 void resetRun()
@@ -1562,6 +1390,13 @@ void resetRun()
   g_player.currentGrindIndex = -1;
   g_player.deckFlex = 0.0f;
   g_player.airTime = 0.0f;
+  g_player.ollieAnim = 0.0f;
+  g_player.manualBalance = 0.0f;
+  g_player.balanceVelocity = 0.0f;
+  g_player.comboEngine.reset();
+  g_player.trickFsm.reset(true);
+  g_player.trickState = TrickState::Grounded;
+  g_player.bailedThisFrame = false;
   g_player.invuln = 0.0f;
   g_player.lives = 3;
   g_player.score = 0;
@@ -1573,15 +1408,7 @@ void resetRun()
   showOverlay("", "");
   g_menuYaw = 0.0f;
 
-  for (auto& obstacle : g_obstacles)
-  {
-    placeObstacleAhead(obstacle);
-  }
-
-  for (auto& coin : g_coins)
-  {
-    placeCoinAhead(coin);
-  }
+  resetWorld(g_world, g_player.position);
 
   g_message = "Ride the line";
   g_messageTimer = 0.75f;
@@ -1589,11 +1416,16 @@ void resetRun()
 
 void loseLife()
 {
+  g_player.bailedThisFrame = true;
+  g_player.comboEngine.onBail();
   g_player.grinding = false;
   g_player.grindCombo = 0;
   g_player.grindTime = 0.0f;
   g_player.currentGrindIndex = -1;
   g_player.deckFlex = 0.0f;
+  g_player.ollieAnim = 0.0f;
+  g_player.manualBalance = 0.0f;
+  g_player.balanceVelocity = 0.0f;
   --g_player.lives;
   g_player.invuln = 1.2f;
   g_flash = 0.18f;
@@ -1635,167 +1467,58 @@ bool rightPressed()
   return g_keys[SDL_SCANCODE_D] || g_keys[SDL_SCANCODE_RIGHT];
 }
 
+const char* trickStateLabel(TrickState state)
+{
+  switch (state)
+  {
+    case TrickState::Grounded:
+      return "GROUNDED";
+    case TrickState::Ollie:
+      return "OLLIE";
+    case TrickState::FlipTrick:
+      return "FLIP";
+    case TrickState::Grinding:
+      return "GRIND";
+    case TrickState::Bailing:
+      return "BAIL";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+std::string activeTrickLabel()
+{
+  if (g_player.trickState == TrickState::FlipTrick)
+  {
+    switch (g_player.trickFsm.activeFlip())
+    {
+      case FlipTrickType::Kickflip:
+        return "KICKFLIP";
+      case FlipTrickType::Heelflip:
+        return "HEELFLIP";
+      case FlipTrickType::None:
+      default:
+        return "FLIP";
+    }
+  }
+
+  return trickStateLabel(g_player.trickState);
+}
+
+InputState buildInputState()
+{
+  InputState input;
+  input.forwardPressed = forwardPressed();
+  input.backwardPressed = backwardPressed();
+  input.turnAxis = (rightPressed() ? 1.0f : 0.0f) - (leftPressed() ? 1.0f : 0.0f);
+  input.jumpPressed = g_jumpQueued;
+  input.flipPressed = g_keys[SDL_SCANCODE_LSHIFT] || g_keys[SDL_SCANCODE_RSHIFT];
+  return input;
+}
+
 void recycleWorld(float dt)
 {
-  for (auto& obstacle : g_obstacles)
-  {
-    if (obstacle.position.z < g_player.position.z - 40.0f)
-    {
-      placeObstacleAhead(obstacle);
-    }
-
-    if (obstacle.hitCooldown > 0.0f)
-    {
-      obstacle.hitCooldown = std::max(0.0f, obstacle.hitCooldown - dt);
-    }
-  }
-
-  for (auto& coin : g_coins)
-  {
-    if (!coin.active || coin.position.z < g_player.position.z - 30.0f)
-    {
-      placeCoinAhead(coin);
-    }
-  }
-}
-
-void handleMovement(float dt)
-{
-  const float accelInput = (forwardPressed() ? 1.0f : 0.0f) - (backwardPressed() ? 0.75f : 0.0f);
-  const Vec3 forward(std::sin(g_player.yaw), 0.0f, std::cos(g_player.yaw));
-
-  if (g_player.grounded)
-  {
-    if (accelInput > 0.0f)
-    {
-      g_player.velocity.x += forward.x * ACCEL * accelInput * dt;
-      g_player.velocity.z += forward.z * ACCEL * accelInput * dt;
-    }
-    else if (accelInput < 0.0f)
-    {
-      g_player.velocity.x *= BRAKE;
-      g_player.velocity.z *= BRAKE;
-    }
-
-    g_player.velocity.x *= DRAG_GROUND;
-    g_player.velocity.z *= DRAG_GROUND;
-  }
-  else
-  {
-    g_player.velocity.x += forward.x * ACCEL * accelInput * dt * 0.58f;
-    g_player.velocity.z += forward.z * ACCEL * accelInput * dt * 0.58f;
-    g_player.velocity.x *= DRAG_AIR;
-    g_player.velocity.z *= DRAG_AIR;
-  }
-
-  const float groundSpeed = length2D(g_player.velocity);
-  if (groundSpeed > MAX_SPEED)
-  {
-    const float scale = MAX_SPEED / groundSpeed;
-    g_player.velocity.x *= scale;
-    g_player.velocity.z *= scale;
-  }
-
-  const float turnSign = (rightPressed() ? 1.0f : 0.0f) - (leftPressed() ? 1.0f : 0.0f);
-  if (std::abs(turnSign) > 0.01f && groundSpeed > 0.8f)
-  {
-    const float turn = (turnSign * TURN_RATE * dt * (0.35f + std::min(0.8f, groundSpeed / 14.0f))) * (g_player.velocity.z >= 0.0f ? 1.0f : -1.0f);
-    g_player.yaw += turn;
-  }
-
-  if (groundSpeed < 0.4f)
-  {
-    g_player.yaw *= 0.98f;
-  }
-
-  if (g_jumpQueued && g_player.grounded)
-  {
-    g_player.velocity.y = JUMP_SPEED;
-    g_player.grounded = false;
-    g_player.airTime = 0.0f;
-    g_jumpQueued = false;
-    setMessage("Ollie!", 0.9f);
-  }
-}
-
-void updatePlayer(float dt)
-{
-  handleMovement(dt);
-
-  if (g_player.position.x > BOARD_HALF_WIDTH - 2.0f)
-  {
-    g_player.position.x = BOARD_HALF_WIDTH - 2.0f;
-    g_player.velocity.x *= -0.3f;
-  }
-
-  if (g_player.position.x < -(BOARD_HALF_WIDTH - 2.0f))
-  {
-    g_player.position.x = -(BOARD_HALF_WIDTH - 2.0f);
-    g_player.velocity.x *= -0.3f;
-  }
-
-  g_player.velocity.y -= GRAVITY * dt;
-  g_player.position += g_player.velocity * dt;
-
-  const float groundY = terrainHeight(g_player.position.x, g_player.position.z) + BOARD_RADIUS;
-  const bool onGroundNow = g_player.position.y <= groundY;
-
-  if (onGroundNow && g_player.velocity.y <= 0.0f)
-  {
-    g_player.position.y = groundY;
-
-    if (!g_player.grounded)
-    {
-      const float landingSpeed = std::max(0.0f, -g_player.velocity.y);
-      const float impactFlex = std::min(0.0f, -landingSpeed * BOARD_LANDING_FLEX_SCALE);
-      g_player.deckFlex = std::min(g_player.deckFlex, std::max(-BOARD_FLEX_LIMIT, impactFlex));
-      const float airtime = g_player.airTime;
-      if (airtime > 0.25f)
-      {
-        const int trickPoints = static_cast<int>(std::floor(std::min(10.0f, airtime * 7.0f)) * 100);
-        const int bonus = std::max(2, static_cast<int>(std::sqrt(length3D(g_player.velocity)) * 12));
-        const int gained = trickPoints + bonus;
-        g_player.score += gained;
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "%.1fs trick: +%d", airtime, gained);
-        setMessage(buf, 1.1f);
-      }
-      g_player.airTime = 0.0f;
-    }
-
-    g_player.grounded = true;
-    g_player.velocity.y = 0.0f;
-
-    if (forwardPressed())
-    {
-      g_player.velocity.x *= 1.005f;
-      g_player.velocity.z *= 1.005f;
-    }
-  }
-  else
-  {
-    g_player.deckFlex = g_player.deckFlex + (BOARD_AIR_FLEX - g_player.deckFlex) * std::clamp(22.0f * dt, 0.0f, 1.0f);
-    g_player.airTime += dt;
-    g_player.grounded = false;
-  }
-
-  if (g_player.grounded)
-  {
-    g_player.deckFlex = g_player.deckFlex + (0.0f - g_player.deckFlex) * std::clamp(BOARD_FLEX_RECOVERY * dt, 0.0f, 1.0f);
-  }
-
-  const float horizSpeed = length2D(g_player.velocity);
-  g_player.distance += horizSpeed * dt;
-
-  if (g_timeLeft > 0.0f && g_state == GameState::Play)
-  {
-    g_timeLeft = std::max(0.0f, g_timeLeft - dt);
-  }
-
-  if (g_timeLeft <= 0.0f && g_state == GameState::Play)
-  {
-    winRun();
-  }
+  recycleWorld(g_world, g_player.position, dt);
 }
 
 void updateObstaclesAndCoins(float dt)
@@ -1805,9 +1528,9 @@ void updateObstaclesAndCoins(float dt)
   int bestRailIndex = -1;
   float bestRailScore = 1.0e9f;
 
-  for (size_t i = 0; i < g_obstacles.size(); ++i)
+  for (size_t i = 0; i < g_world.obstacles.size(); ++i)
   {
-    auto& obstacle = g_obstacles[i];
+    auto& obstacle = g_world.obstacles[i];
     if (!obstacle.active)
     {
       continue;
@@ -1847,9 +1570,10 @@ void updateObstaclesAndCoins(float dt)
       const int combo = std::max(1, g_player.grindCombo + 1);
       g_player.grindCombo = combo;
       const int entryScore = GRIND_ENTRY_BONUS + combo * 20;
-      g_player.score += entryScore;
+      g_player.comboEngine.bumpMultiplier(0.22f);
+      const int entryAward = g_player.comboEngine.addPoints(entryScore);
       g_player.grindHintTimer = 0.35f;
-      setMessage("GRIND +" + std::to_string(entryScore) + "x" + std::to_string(combo), 0.9f);
+      setMessage("GRIND +" + std::to_string(entryAward) + "x" + std::to_string(combo), 0.9f);
       g_player.grindTime = 0.0f;
       g_player.grindScoreCarry = 0.0f;
     }
@@ -1863,7 +1587,7 @@ void updateObstaclesAndCoins(float dt)
     const int grindScore = static_cast<int>(std::floor(g_player.grindScoreCarry));
     if (grindScore > 0)
     {
-      g_player.score += grindScore;
+      g_player.comboEngine.addPoints(grindScore);
       g_player.grindScoreCarry -= static_cast<float>(grindScore);
     }
 
@@ -1886,8 +1610,9 @@ void updateObstaclesAndCoins(float dt)
     if (g_player.grinding)
     {
       const int exitScore = GRIND_EXIT_BONUS + g_player.grindCombo * 30;
-      g_player.score += exitScore;
-      setMessage("GRIND END +" + std::to_string(exitScore), 0.55f);
+      g_player.comboEngine.bumpMultiplier(0.12f);
+      const int exitAward = g_player.comboEngine.addPoints(exitScore);
+      setMessage("GRIND END +" + std::to_string(exitAward), 0.55f);
     }
 
     g_player.grinding = false;
@@ -1899,7 +1624,7 @@ void updateObstaclesAndCoins(float dt)
 
     if (g_player.invuln <= 0.0f && g_player.velocity.y <= 0.0f)
     {
-      for (const auto& obstacle : g_obstacles)
+      for (const auto& obstacle : g_world.obstacles)
       {
         if (!obstacle.active || !obstacle.rail)
         {
@@ -1917,7 +1642,7 @@ void updateObstaclesAndCoins(float dt)
     }
   }
 
-  for (auto& coin : g_coins)
+  for (auto& coin : g_world.coins)
   {
     if (!coin.active)
     {
@@ -2905,7 +2630,7 @@ void drawPlayer()
   glTranslatef(g_player.position.x, g_player.position.y, g_player.position.z);
   glRotatef(g_player.yaw * DEG, 0.0f, 1.0f, 0.0f);
 
-  const Vec3 groundN = terrainNormal(g_player.position.x, g_player.position.z);
+  const Vec3 groundN = g_playerGround.normal;
   const float pitch = std::asin(std::clamp(-groundN.y, -1.0f, 1.0f)) * DEG * -0.2f;
   const float groundSpeed = std::clamp(length2D(g_player.velocity), 0.0f, MAX_SPEED);
   const float wheelDir = (g_player.velocity.z >= 0.0f) ? 1.0f : -1.0f;
@@ -2913,14 +2638,33 @@ void drawPlayer()
   const float roll = -std::asin(std::clamp(groundN.x, -1.0f, 1.0f)) * DEG * 0.35f;
   const float lean =
     (groundSpeed > 0.8f ? std::clamp((g_player.velocity.x / (groundSpeed + 0.001f)) * (g_player.velocity.z >= 0.0f ? 1.0f : -1.0f), -1.0f, 1.0f) * 16.0f : 0.0f);
+  const float ollie = olliePopEnvelope(g_player.ollieAnim);
+  const float riderTuck = OLLIE_RIDER_TUCK * ollie;
+  float flipBoardRoll = 0.0f;
+  constexpr float BOARD_NEUTRAL_FIX = 180.0f;
+
+  if (g_player.trickState == TrickState::FlipTrick)
+  {
+    const FlipTrickType activeFlip = g_player.trickFsm.activeFlip();
+    if (activeFlip == FlipTrickType::Kickflip || activeFlip == FlipTrickType::Heelflip)
+    {
+      const float flipProgress = std::clamp(g_player.trickFsm.stateTimer() / 0.65f, 0.0f, 1.0f);
+      const float direction = activeFlip == FlipTrickType::Kickflip ? 1.0f : -1.0f;
+      flipBoardRoll = 360.0f * flipProgress * direction;
+    }
+  }
 
   glRotatef(pitch, 1.0f, 0.0f, 0.0f);
   glRotatef(roll + lean, 0.0f, 0.0f, 1.0f);
-  glTranslatef(0.0f, -0.22f, 0.0f);
+  glRotatef(OLLIE_BOARD_PITCH * ollie, 1.0f, 0.0f, 0.0f);
+  glTranslatef(0.0f, -0.22f + OLLIE_POP_LIFT * 0.45f * ollie, 0.0f);
+  glPushMatrix();
+  glRotatef(BOARD_NEUTRAL_FIX, 1.0f, 0.0f, 0.0f);
+  glRotatef(flipBoardRoll, 0.0f, 0.0f, 1.0f);
   const float bounce = -0.03f * std::sin(nowSeconds() * 7.0f + g_player.position.z * 0.05f);
 
   const float deckFlex = std::clamp(g_player.deckFlex, -BOARD_FLEX_LIMIT, 0.0f);
-  const float deckHeight = 0.02f + bounce + deckFlex * 0.9f;
+  const float deckHeight = 0.02f + bounce + deckFlex * 0.9f + OLLIE_POP_LIFT * 0.6f * ollie;
   const bool useProceduralBoard = kUseProceduralSkateboard;
   const float wheelZOffset = kProceduralDeckLength * 0.384f;
   const float truckZOffset = kProceduralDeckLength * 0.347f;
@@ -3080,10 +2824,13 @@ void drawPlayer()
     }
   }
 
+  glPopMatrix();
+
   // Rider high-fidelity asset (fallback to silhouette if missing).
   glPushMatrix();
-  glTranslatef(0.0f, deckHeight + 0.03f, 0.06f);
-  glRotatef(-6.0f, 1.0f, 0.0f, 0.0f);
+  glTranslatef(0.0f, deckHeight + OLLIE_RIDER_RISE * ollie + 0.03f, 0.06f);
+  glRotatef(-6.0f - riderTuck, 1.0f, 0.0f, 0.0f);
+  glRotatef(riderTuck * 0.45f, 0.0f, 0.0f, 1.0f);
   if (g_characterModel.loaded && !g_characterModelFallback)
   {
     glScalef(0.62f, 0.62f, 0.62f);
@@ -3199,6 +2946,56 @@ void drawAgentOrchestrationStatus()
   }
 }
 
+void drawManualBalanceOverlay()
+{
+  if (g_state != GameState::Play && g_state != GameState::Pause)
+  {
+    return;
+  }
+
+  const float panelW = 198.0f;
+  const float panelH = 42.0f;
+  const float panelX0 = static_cast<float>(g_windowW) - panelW - 12.0f;
+  const float panelX1 = static_cast<float>(g_windowW) - 12.0f;
+  const float panelY0 = static_cast<float>(g_windowH - 190);
+  const float panelY1 = panelY0 + panelH;
+  const float pad = 4.0f;
+
+  drawRect2D(panelX0, panelY0, panelX1, panelY1, 0.03f, 0.08f, 0.14f, 0.45f);
+  drawRect2D(panelX0 + pad, panelY0 + pad, panelX1 - pad, panelY1 - pad, 0.06f, 0.16f, 0.24f, 0.34f);
+
+  const float barX0 = panelX0 + 12.0f;
+  const float barX1 = panelX1 - 12.0f;
+  const float barY0 = panelY0 + 8.0f;
+  const float barY1 = panelY0 + 18.0f;
+  const float center = 0.5f * (barX0 + barX1);
+  const float level = std::clamp(0.5f + (g_player.manualBalance * 0.5f), 0.0f, 1.0f);
+  const float knobX = barX0 + (barX1 - barX0) * level;
+  const float drift = std::abs(g_player.manualBalance);
+  const float stability = std::clamp(1.0f - drift, 0.0f, 1.0f);
+
+  drawRect2D(barX0, barY0, barX1, barY1, 0.22f, 0.22f, 0.26f, 0.45f);
+  drawRect2D(center - 1.0f, barY0 - 1.0f, center + 1.0f, barY1 + 1.0f, 0.92f, 0.90f, 0.72f, 0.90f);
+
+  float indicatorR = 0.28f + 0.62f * stability;
+  float indicatorG = 0.90f * stability + 0.25f * (1.0f - stability);
+  float indicatorB = 0.28f;
+  drawRect2D(knobX - 2.0f, barY0 - 2.0f, knobX + 2.0f, barY1 + 2.0f, indicatorR, indicatorG, indicatorB, 0.92f);
+
+  drawTextWithShadow(static_cast<int>(panelX0 + 9.0f), static_cast<int>(panelY1 - 8.0f), "Manual Balance", 0.95f);
+
+  char balanceText[48];
+  if (drift > BALANCE_WARNING)
+  {
+    std::snprintf(balanceText, sizeof(balanceText), "Stability: %d%%  !", static_cast<int>(std::round(stability * 100.0f)));
+  }
+  else
+  {
+    std::snprintf(balanceText, sizeof(balanceText), "Stability: %d%%", static_cast<int>(std::round(stability * 100.0f)));
+  }
+  drawTextWithShadow(static_cast<int>(panelX0 + 9.0f), static_cast<int>(panelY0 + 24.0f), balanceText, 0.94f);
+}
+
 void drawHUD()
 {
   glMatrixMode(GL_PROJECTION);
@@ -3238,12 +3035,31 @@ void drawHUD()
   std::snprintf(buf, sizeof(buf), "Lives: %d", g_player.lives);
   drawTextWithShadow(14, g_windowH - 98, buf, 0.96f);
 
+  const std::string trickLabel = activeTrickLabel();
+  std::snprintf(buf, sizeof(buf), "Trick: %s", trickLabel.c_str());
+  drawTextWithShadow(14, g_windowH - 116, buf, 0.98f);
+
   if (!g_message.empty())
   {
-    drawTextWithShadow(14, g_windowH - 128, g_message, 1.0f);
+    drawTextWithShadow(14, g_windowH - 134, g_message, 1.0f);
   }
 
+  drawManualBalanceOverlay();
   drawAgentOrchestrationStatus();
+
+  if (g_player.comboEngine.active())
+  {
+    char comboLine[96];
+    char bankLine[96];
+    std::snprintf(comboLine, sizeof(comboLine), "Multiplier x%.2f", g_player.comboEngine.multiplier());
+    std::snprintf(bankLine, sizeof(bankLine), "Pending %d", g_player.comboEngine.pendingScore());
+
+    const std::string comboTitle = "COMBO LIVE";
+    const int centerX = g_windowW / 2;
+    drawTextWithShadow(centerX - static_cast<int>(comboTitle.size()) * 4, g_windowH / 2 + 68, comboTitle, 1.0f);
+    drawTextWithShadow(centerX - static_cast<int>(std::string(comboLine).size()) * 4, g_windowH / 2 + 50, comboLine, 0.98f);
+    drawTextWithShadow(centerX - static_cast<int>(std::string(bankLine).size()) * 4, g_windowH / 2 + 32, bankLine, 0.98f);
+  }
 
   const float pulse = 0.5f + 0.5f * g_pausePulse;
 
@@ -3433,12 +3249,12 @@ void renderScene()
 
   drawWorld();
 
-  for (const auto& o : g_obstacles)
+  for (const auto& o : g_world.obstacles)
   {
     drawObstacle(o);
   }
 
-  for (auto& c : g_coins)
+  for (auto& c : g_world.coins)
   {
     drawCoin(c);
   }
@@ -3469,6 +3285,7 @@ void tick()
     dt = g_deltaBackup;
   }
   g_deltaBackup = dt;
+  refreshPlayerGroundState();
 
   if (g_state == GameState::Menu)
   {
@@ -3481,9 +3298,26 @@ void tick()
 
   if (g_state == GameState::Play && !g_paused)
   {
-    updatePlayer(dt);
+    const InputState input = buildInputState();
+    const bool manualWipeout = updatePlayer(dt, input);
+    g_jumpQueued = false;
+    if (manualWipeout)
+    {
+      loseLife();
+    }
+
+    g_player.distance += length2D(g_player.velocity) * dt;
+
+    g_timeLeft -= dt;
+    if (g_timeLeft <= 0.0f)
+    {
+      winRun();
+      g_timeLeft = 0.0f;
+    }
+
     recycleWorld(dt);
     updateObstaclesAndCoins(dt);
+    updateTrickState(dt, input);
     updateTimers(dt);
   }
   else

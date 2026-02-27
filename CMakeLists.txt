@@ -30,6 +30,9 @@ endif()
 
 add_executable(oneshot-skate
   src/main.cpp
+  src/player.cpp
+  src/world.cpp
+  src/tricks.cpp
 )
 
 target_include_directories(oneshot-skate PRIVATE

@@ -1,0 +1,135 @@
+#include "world.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <random>
+
+namespace
+{
+
+constexpr float PI = 3.14159265358979323846f;
+constexpr float TERRAIN_Z_FREQ = 0.05f;
+constexpr float TERRAIN_X_FREQ = 0.07f;
+constexpr float TERRAIN_XZ_FREQ = 0.028f;
+constexpr float TERRAIN_XZ_MIX_FREQ = 0.02f;
+constexpr float TERRAIN_XZ_AMP = 0.7f;
+constexpr float TERRAIN_XZ_MIX_AMP = 0.45f;
+std::mt19937 g_worldRng{std::random_device{}()};
+
+float rand01()
+{
+  std::uniform_real_distribution<float> d(0.0f, 1.0f);
+  return d(g_worldRng);
+}
+
+float randRange(float min, float max)
+{
+  std::uniform_real_distribution<float> d(min, max);
+  return d(g_worldRng);
+}
+
+float terrainHeight(float x, float z)
+{
+  return std::sin(z * TERRAIN_Z_FREQ) * 1.2f +
+    std::cos(x * TERRAIN_X_FREQ) * 1.1f +
+    std::sin((x + z) * TERRAIN_XZ_FREQ) * TERRAIN_XZ_AMP +
+    std::cos((x - z * 0.9f) * TERRAIN_XZ_MIX_FREQ) * TERRAIN_XZ_MIX_AMP;
+}
+
+}
+
+void placeObstacleAhead(WorldState& world, std::size_t index, const Vec3& playerPosition)
+{
+  auto& obstacle = world.obstacles[index];
+
+  const float ahead = (static_cast<float>(index) + 1.0f) * 12.0f;
+  const float targetZ = playerPosition.z + (SEGMENT_LENGTH * 0.5f) + randRange(0.0f, OBSTACLE_RECYCLE_OFFSET) + ahead;
+  float x = (rand01() * 2.0f - 1.0f) * (BOARD_HALF_WIDTH * 0.78f);
+  x = std::clamp(x, -BOARD_HALF_WIDTH + 4.0f, BOARD_HALF_WIDTH - 4.0f);
+
+  obstacle.position = {x, terrainHeight(x, targetZ), targetZ};
+  obstacle.active = true;
+  obstacle.hitCooldown = 0.0f;
+  obstacle.rail = rand01() < 0.2f;
+  obstacle.radius = obstacle.rail ? 1.25f : 1.0f;
+}
+
+void placeCoinAhead(WorldState& world, std::size_t index, const Vec3& playerPosition)
+{
+  auto& coin = world.coins[index];
+
+  const float z = playerPosition.z + randRange(SEGMENT_LENGTH, COIN_RECYCLE_OFFSET) + 12.0f;
+  const float x = (rand01() * 2.0f - 1.0f) * (BOARD_HALF_WIDTH * 0.65f);
+
+  coin.position = {x, terrainHeight(x, z) + 1.2f, z};
+  coin.active = true;
+  coin.spin = 1.2f + randRange(0.0f, 1.2f);
+  coin.phase = randRange(0.0f, static_cast<float>(2.0f * PI));
+}
+
+void initializeWorld(WorldState& world, const Vec3& playerPosition)
+{
+  for (size_t i = 0; i < world.obstacles.size(); ++i)
+  {
+    placeObstacleAhead(world, i, playerPosition);
+  }
+
+  for (size_t i = 0; i < world.coins.size(); ++i)
+  {
+    placeCoinAhead(world, i, playerPosition);
+  }
+}
+
+void resetWorld(WorldState& world, const Vec3& playerPosition)
+{
+  for (size_t i = 0; i < world.obstacles.size(); ++i)
+  {
+    placeObstacleAhead(world, i, playerPosition);
+  }
+
+  for (size_t i = 0; i < world.coins.size(); ++i)
+  {
+    placeCoinAhead(world, i, playerPosition);
+  }
+}
+
+void recycleWorld(WorldState& world, const Vec3& playerPosition, float dt)
+{
+  for (auto& obstacle : world.obstacles)
+  {
+    if (obstacle.position.z < playerPosition.z - 40.0f)
+    {
+      const size_t index = static_cast<size_t>(&obstacle - &world.obstacles[0]);
+      placeObstacleAhead(world, index, playerPosition);
+    }
+
+    if (obstacle.hitCooldown > 0.0f)
+    {
+      obstacle.hitCooldown = std::max(0.0f, obstacle.hitCooldown - dt);
+    }
+  }
+
+  for (size_t i = 0; i < world.coins.size(); ++i)
+  {
+    auto& coin = world.coins[i];
+    if (!coin.active || coin.position.z < playerPosition.z - 30.0f)
+    {
+      placeCoinAhead(world, i, playerPosition);
+    }
+  }
+}
+
+bool canGrindOnRail(const Obstacle& rail, const Vec3& playerPos, float playerSpeed)
+{
+  if (!rail.rail || !rail.active)
+  {
+    return false;
+  }
+
+  const float dx = playerPos.x - rail.position.x;
+  const float dz = playerPos.z - rail.position.z;
+  const float horizDist = std::sqrt(dx * dx + dz * dz);
+  const float yDiff = std::fabs(playerPos.y - rail.position.y);
+  const float radiusGate = rail.radius + GRIND_CATCH_RADIUS;
+  return horizDist <= radiusGate && yDiff <= GRIND_Y_TOLERANCE && playerSpeed >= GRIND_ENTRY_SPEED;
+}
