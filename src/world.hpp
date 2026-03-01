@@ -39,6 +39,9 @@ struct WorldState
   std::array<Coin, COIN_COUNT> coins;
 };
 
+float terrainHeight(float x, float z);
+Vec3 terrainNormal(float x, float z);
+
 void initializeWorld(WorldState& world, const Vec3& playerPosition);
 void resetWorld(WorldState& world, const Vec3& playerPosition);
 void recycleWorld(WorldState& world, const Vec3& playerPosition, float dt);

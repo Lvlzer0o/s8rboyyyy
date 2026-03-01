@@ -1,12 +1,11 @@
 #include "player.hpp"
+#include "world.hpp"
 
 #include <algorithm>
 #include <cmath>
 
 namespace
 {
-
-constexpr float TERRAIN_NORMAL_EPSILON = 0.28f;
 
 int flipBasePoints(FlipTrickType trick)
 {
@@ -20,27 +19,6 @@ int flipBasePoints(FlipTrickType trick)
     default:
       return 0;
   }
-}
-
-float terrainHeightForPlayer(float x, float z)
-{
-  return std::sin(z * 0.05f) * 1.2f +
-    std::cos(x * 0.07f) * 1.1f +
-    std::sin((x + z) * 0.028f) * 0.7f +
-    std::cos((x - z * 0.9f) * 0.02f) * 0.45f;
-}
-
-Vec3 terrainNormalForPlayer(float x, float z)
-{
-  float hX1 = terrainHeightForPlayer(x - TERRAIN_NORMAL_EPSILON, z);
-  float hX2 = terrainHeightForPlayer(x + TERRAIN_NORMAL_EPSILON, z);
-  float hZ1 = terrainHeightForPlayer(x, z - TERRAIN_NORMAL_EPSILON);
-  float hZ2 = terrainHeightForPlayer(x, z + TERRAIN_NORMAL_EPSILON);
-  float dX = (hX2 - hX1) / (2.0f * TERRAIN_NORMAL_EPSILON);
-  float dZ = (hZ2 - hZ1) / (2.0f * TERRAIN_NORMAL_EPSILON);
-  Vec3 n{-dX, 1.0f, -dZ};
-  float invLen = 1.0f / (std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z));
-  return {n.x * invLen, n.y * invLen, n.z * invLen};
 }
 
 void handleMovement(
@@ -79,7 +57,6 @@ void handleMovement(
   {
     const float scale = MAX_SPEED / groundSpeed;
     g_player.velocity.x *= scale;
-    g_player.velocity.y *= scale;
     g_player.velocity.z *= scale;
   }
 
@@ -119,8 +96,8 @@ GroundState g_playerGround;
 
 void refreshPlayerGroundState()
 {
-  g_playerGround.height = terrainHeightForPlayer(g_player.position.x, g_player.position.z);
-  g_playerGround.normal = terrainNormalForPlayer(g_player.position.x, g_player.position.z);
+  g_playerGround.height = terrainHeight(g_player.position.x, g_player.position.z);
+  g_playerGround.normal = terrainNormal(g_player.position.x, g_player.position.z);
 }
 
 bool updateManualBalance(float dt, float turnInput)
