@@ -312,6 +312,9 @@ float g_flash = 0.0f;
 
 float g_deltaBackup = 0.016f;
 float g_lastFrame = 0.0f;
+float g_fixedPhysicsAccumulator = 0.0f;
+constexpr float FIXED_PHYSICS_STEP = 1.0f / 120.0f;
+constexpr float MAX_PHYSICS_CATCHUP = 0.1f;
 
 int g_windowW = 1360;
 int g_windowH = 800;
@@ -1484,9 +1487,80 @@ void recycleWorld(float dt)
   recycleWorld(g_world, g_player.position, dt);
 }
 
+bool intersectsAabb(const Vec3& centerA, const Vec3& halfExtentsA, const Vec3& centerB, const Vec3& halfExtentsB)
+{
+  return std::fabs(centerA.x - centerB.x) <= halfExtentsA.x + halfExtentsB.x &&
+    std::fabs(centerA.y - centerB.y) <= halfExtentsA.y + halfExtentsB.y &&
+    std::fabs(centerA.z - centerB.z) <= halfExtentsA.z + halfExtentsB.z;
+}
+
+bool sweptAabbHit(
+  const Vec3& start,
+  const Vec3& end,
+  const Vec3& playerHalfExtents,
+  const Vec3& obstacleCenter,
+  const Vec3& obstacleHalfExtents)
+{
+  const Vec3 expandedHalf {
+    obstacleHalfExtents.x + playerHalfExtents.x,
+    obstacleHalfExtents.y + playerHalfExtents.y,
+    obstacleHalfExtents.z + playerHalfExtents.z,
+  };
+
+  const Vec3 delta {end.x - start.x, end.y - start.y, end.z - start.z};
+
+  float entry = 0.0f;
+  float exit = 1.0f;
+
+  auto sweepAxis = [&](float startAxis, float deltaAxis, float minAxis, float maxAxis)
+  {
+    if (std::fabs(deltaAxis) < 0.00001f)
+    {
+      return startAxis >= minAxis && startAxis <= maxAxis;
+    }
+
+    const float inv = 1.0f / deltaAxis;
+    float t0 = (minAxis - startAxis) * inv;
+    float t1 = (maxAxis - startAxis) * inv;
+
+    if (t0 > t1)
+    {
+      std::swap(t0, t1);
+    }
+
+    entry = std::max(entry, t0);
+    exit = std::min(exit, t1);
+    return entry <= exit;
+  };
+
+  const float minX = obstacleCenter.x - expandedHalf.x;
+  const float maxX = obstacleCenter.x + expandedHalf.x;
+  const float minY = obstacleCenter.y - expandedHalf.y;
+  const float maxY = obstacleCenter.y + expandedHalf.y;
+  const float minZ = obstacleCenter.z - expandedHalf.z;
+  const float maxZ = obstacleCenter.z + expandedHalf.z;
+
+  if (!sweepAxis(start.x, delta.x, minX, maxX))
+  {
+    return false;
+  }
+  if (!sweepAxis(start.y, delta.y, minY, maxY))
+  {
+    return false;
+  }
+  if (!sweepAxis(start.z, delta.z, minZ, maxZ))
+  {
+    return false;
+  }
+
+  return exit >= 0.0f && entry <= 1.0f;
+}
+
 void updateObstaclesAndCoins(float dt)
 {
   const Vec3 playerPos = g_player.position;
+  const Vec3 previousPlayerPos = g_player.position - (g_player.velocity * dt);
+  const Vec3 playerHalfExtents {BOARD_RADIUS, BOARD_RADIUS, BOARD_RADIUS};
   const float playerSpeed = length2D(g_player.velocity);
   int bestRailIndex = -1;
   float bestRailScore = 1.0e9f;
@@ -1503,16 +1577,22 @@ void updateObstaclesAndCoins(float dt)
     obstacle.position.y = std::fma(0.2f, (testY - obstacle.position.y), obstacle.position.y);
 
     const Vec3 d{playerPos.x - obstacle.position.x, playerPos.y - obstacle.position.y, playerPos.z - obstacle.position.z};
-    const float dist = length3D(d);
+    const bool collidesNow = intersectsAabb(playerPos, playerHalfExtents, obstacle.position, obstacle.collisionHalfExtents);
+    const bool sweptCollision = sweptAabbHit(
+      previousPlayerPos,
+      playerPos,
+      playerHalfExtents,
+      obstacle.position,
+      obstacle.collisionHalfExtents);
 
-    if (!obstacle.rail && dist < obstacle.radius + BOARD_RADIUS && g_player.invuln <= 0.0f && obstacle.hitCooldown <= 0.0f)
+    if (!obstacle.rail && (collidesNow || sweptCollision) && g_player.invuln <= 0.0f && obstacle.hitCooldown <= 0.0f)
     {
       obstacle.hitCooldown = 1.0f;
       loseLife();
       break;
     }
 
-    if (obstacle.rail && dist < obstacle.radius + BOARD_RADIUS && g_player.invuln <= 0.0f && obstacle.hitCooldown <= 0.0f &&
+    if (obstacle.rail && (collidesNow || sweptCollision) && g_player.invuln <= 0.0f && obstacle.hitCooldown <= 0.0f &&
         !canGrindOnRail(obstacle, playerPos, playerSpeed))
     {
       obstacle.hitCooldown = 1.0f;
@@ -1602,9 +1682,14 @@ void updateObstaclesAndCoins(float dt)
           continue;
         }
 
-        const Vec3 d{playerPos.x - obstacle.position.x, playerPos.y - obstacle.position.y, playerPos.z - obstacle.position.z};
-        const float dist = length3D(d);
-        if (dist < obstacle.radius + BOARD_RADIUS && obstacle.hitCooldown <= 0.0f)
+        const bool collidesNow = intersectsAabb(playerPos, playerHalfExtents, obstacle.position, obstacle.collisionHalfExtents);
+        const bool sweptCollision = sweptAabbHit(
+          previousPlayerPos,
+          playerPos,
+          playerHalfExtents,
+          obstacle.position,
+          obstacle.collisionHalfExtents);
+        if ((collidesNow || sweptCollision) && obstacle.hitCooldown <= 0.0f)
         {
           loseLife();
           break;
@@ -3252,24 +3337,23 @@ void tick()
   const float current = nowSeconds();
   g_pausePulse = std::sin(current * 6.5f);
 
-  float dt = current - g_lastFrame;
+  float frameDt = current - g_lastFrame;
   g_lastFrame = current;
 
-  if (dt > 0.05f)
+  if (frameDt > 0.05f)
   {
-    dt = 0.05f;
+    frameDt = 0.05f;
   }
 
-  if (dt <= 0.0f)
+  if (frameDt <= 0.0f)
   {
-    dt = g_deltaBackup;
+    frameDt = g_deltaBackup;
   }
-  g_deltaBackup = dt;
-  refreshPlayerGroundState();
+  g_deltaBackup = frameDt;
 
   if (g_state == GameState::Menu)
   {
-    g_menuYaw += dt * 0.5f;
+    g_menuYaw += frameDt * 0.5f;
     if (g_menuYaw > TAU)
     {
       g_menuYaw -= TAU;
@@ -3278,31 +3362,46 @@ void tick()
 
   if (g_state == GameState::Play && !g_paused)
   {
-    const InputState input = buildInputState();
-    const bool manualWipeout = updatePlayer(dt, input);
+    g_fixedPhysicsAccumulator = std::min(g_fixedPhysicsAccumulator + frameDt, MAX_PHYSICS_CATCHUP);
+
+    while (g_fixedPhysicsAccumulator >= FIXED_PHYSICS_STEP)
+    {
+      const InputState input = buildInputState();
+      refreshPlayerGroundState();
+      const bool manualWipeout = updatePlayer(FIXED_PHYSICS_STEP, input);
+      if (manualWipeout)
+      {
+        loseLife();
+      }
+
+      g_player.distance += length2D(g_player.velocity) * FIXED_PHYSICS_STEP;
+
+      g_timeLeft -= FIXED_PHYSICS_STEP;
+      if (g_timeLeft <= 0.0f)
+      {
+        winRun();
+        g_timeLeft = 0.0f;
+      }
+
+      recycleWorld(FIXED_PHYSICS_STEP);
+      updateObstaclesAndCoins(FIXED_PHYSICS_STEP);
+      updateTrickState(FIXED_PHYSICS_STEP, input);
+      updateTimers(FIXED_PHYSICS_STEP);
+
+      g_fixedPhysicsAccumulator -= FIXED_PHYSICS_STEP;
+
+      if (g_state != GameState::Play || g_paused)
+      {
+        break;
+      }
+    }
+
     g_jumpQueued = false;
-    if (manualWipeout)
-    {
-      loseLife();
-    }
-
-    g_player.distance += length2D(g_player.velocity) * dt;
-
-    g_timeLeft -= dt;
-    if (g_timeLeft <= 0.0f)
-    {
-      winRun();
-      g_timeLeft = 0.0f;
-    }
-
-    recycleWorld(dt);
-    updateObstaclesAndCoins(dt);
-    updateTrickState(dt, input);
-    updateTimers(dt);
   }
   else
   {
-    updateTimers(dt);
+    g_fixedPhysicsAccumulator = 0.0f;
+    updateTimers(frameDt);
   }
 }
 

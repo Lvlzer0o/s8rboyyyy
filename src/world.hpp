@@ -19,6 +19,7 @@ struct Obstacle
 {
   Vec3 position;
   float radius = 1.0f;
+  Vec3 collisionHalfExtents {1.0f, 1.0f, 1.0f};
   bool rail = false;
   bool active = true;
   float hitCooldown = 0.0f;
