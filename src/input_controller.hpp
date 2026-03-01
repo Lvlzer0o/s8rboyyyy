@@ -17,7 +17,7 @@ public:
                     const std::function<void()>& onEscapePressed);
 
   bool isDown(SDL_Scancode scancode) const;
-  void setDown(SDL_Scancode scancode, bool isDown);
+  void setDown(SDL_Scancode scancode, bool isPressed);
 
   bool jumpQueued() const;
   void setJumpQueued(bool queued);
