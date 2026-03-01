@@ -1558,8 +1558,12 @@ bool sweptAabbHit(
 
 void updateObstaclesAndCoins(float dt)
 {
+  // Track the player's position from the previous frame to get an accurate swept segment.
+  static Vec3 s_previousPlayerPos = g_player.position;
+
+  const Vec3 previousPlayerPos = s_previousPlayerPos;
   const Vec3 playerPos = g_player.position;
-  const Vec3 previousPlayerPos = g_player.position - (g_player.velocity * dt);
+  s_previousPlayerPos = playerPos;
   const Vec3 playerHalfExtents {BOARD_RADIUS, BOARD_RADIUS, BOARD_RADIUS};
   const float playerSpeed = length2D(g_player.velocity);
   int bestRailIndex = -1;
