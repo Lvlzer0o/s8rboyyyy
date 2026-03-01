@@ -15,6 +15,10 @@ constexpr float TERRAIN_XZ_FREQ = 0.028f;
 constexpr float TERRAIN_XZ_MIX_FREQ = 0.02f;
 constexpr float TERRAIN_XZ_AMP = 0.7f;
 constexpr float TERRAIN_XZ_MIX_AMP = 0.45f;
+constexpr float RAIL_HALF_WIDTH = 0.55f;
+constexpr float RAIL_HALF_HEIGHT = 0.45f;
+constexpr float RAIL_HALF_LENGTH = 2.6f;
+constexpr float CRATE_HALF_SIZE = 1.0f;
 std::mt19937 g_worldRng{std::random_device{}()};
 
 float rand01()
@@ -67,6 +71,8 @@ void placeObstacleAhead(WorldState& world, std::size_t index, const Vec3& player
   obstacle.hitCooldown = 0.0f;
   obstacle.rail = rand01() < 0.2f;
   obstacle.radius = obstacle.rail ? 1.25f : 1.0f;
+  obstacle.collisionHalfExtents = obstacle.rail ? Vec3{RAIL_HALF_WIDTH, RAIL_HALF_HEIGHT, RAIL_HALF_LENGTH} :
+    Vec3{CRATE_HALF_SIZE, CRATE_HALF_SIZE, CRATE_HALF_SIZE};
 }
 
 void placeCoinAhead(WorldState& world, std::size_t index, const Vec3& playerPosition)
@@ -135,10 +141,20 @@ bool canGrindOnRail(const Obstacle& rail, const Vec3& playerPos, float playerSpe
     return false;
   }
 
-  const float dx = playerPos.x - rail.position.x;
-  const float dz = playerPos.z - rail.position.z;
-  const float horizDist = std::sqrt(dx * dx + dz * dz);
-  const float yDiff = std::fabs(playerPos.y - rail.position.y);
-  const float radiusGate = rail.radius + GRIND_CATCH_RADIUS;
-  return horizDist <= radiusGate && yDiff <= GRIND_Y_TOLERANCE && playerSpeed >= GRIND_ENTRY_SPEED;
+  const Vec3 localDelta {
+    std::fabs(playerPos.x - rail.position.x),
+    std::fabs(playerPos.y - rail.position.y),
+    std::fabs(playerPos.z - rail.position.z),
+  };
+
+  const Vec3 grindGate {
+    rail.collisionHalfExtents.x + BOARD_RADIUS + 0.2f,
+    std::max(GRIND_Y_TOLERANCE, rail.collisionHalfExtents.y + 0.25f),
+    rail.collisionHalfExtents.z + GRIND_CATCH_RADIUS,
+  };
+
+  return localDelta.x <= grindGate.x &&
+    localDelta.y <= grindGate.y &&
+    localDelta.z <= grindGate.z &&
+    playerSpeed >= GRIND_ENTRY_SPEED;
 }
