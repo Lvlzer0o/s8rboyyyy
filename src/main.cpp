@@ -1512,6 +1512,14 @@ void updateObstaclesAndCoins(float dt)
       break;
     }
 
+    if (obstacle.rail && dist < obstacle.radius + BOARD_RADIUS && g_player.invuln <= 0.0f && obstacle.hitCooldown <= 0.0f &&
+        !canGrindOnRail(obstacle, playerPos, playerSpeed))
+    {
+      obstacle.hitCooldown = 1.0f;
+      loseLife();
+      break;
+    }
+
     if (obstacle.rail && canGrindOnRail(obstacle, playerPos, playerSpeed))
     {
       const float score = d.x * d.x + d.z * d.z;
@@ -2791,7 +2799,7 @@ void drawPlayer()
 
   // Rider high-fidelity asset (fallback to silhouette if missing).
   glPushMatrix();
-  glTranslatef(0.0f, deckHeight + OLLIE_RIDER_RISE * ollie + 0.03f, 0.06f);
+  glTranslatef(0.0f, deckHeight + OLLIE_RIDER_RISE * ollie + 0.13f, 0.06f);
   glRotatef(-6.0f - riderTuck, 1.0f, 0.0f, 0.0f);
   glRotatef(riderTuck * 0.45f, 0.0f, 0.0f, 1.0f);
   if (g_characterModel.loaded && !g_characterModelFallback)
@@ -2802,28 +2810,37 @@ void drawPlayer()
   }
   else
   {
-    glTranslatef(0.0f, 0.52f, 0.04f);
-    glRotatef(-12.0f, 1.0f, 0.0f, 0.0f);
+    glRotatef(-10.0f, 1.0f, 0.0f, 0.0f);
 
+    // Left leg
     glPushMatrix();
-    glTranslatef(0.0f, 0.30f, 0.02f);
-    glScalef(0.34f, 0.25f, 0.24f);
+    glTranslatef(-0.20f, 1.10f, 0.0f);
+    glScalef(0.28f, 2.20f, 0.30f);
+    glColor3f(0.08f, 0.08f, 0.14f);
+    drawSolidCube(1.0f);
+    glPopMatrix();
+
+    // Right leg
+    glPushMatrix();
+    glTranslatef(0.20f, 1.10f, 0.0f);
+    glScalef(0.28f, 2.20f, 0.30f);
+    glColor3f(0.08f, 0.08f, 0.14f);
+    drawSolidCube(1.0f);
+    glPopMatrix();
+
+    // Torso
+    glPushMatrix();
+    glTranslatef(0.0f, 3.05f, 0.04f);
+    glScalef(0.94f, 1.70f, 0.60f);
     glColor3f(0.06f, 0.08f, 0.11f);
     drawSolidCube(1.0f);
     glPopMatrix();
 
+    // Head
     glPushMatrix();
-    glTranslatef(0.0f, 0.58f, 0.12f);
-    glScalef(0.19f, 0.34f, 0.14f);
-    glColor3f(0.06f, 0.07f, 0.10f);
-    drawSolidCube(1.0f);
-    glPopMatrix();
-
-    glPushMatrix();
-    glTranslatef(0.0f, 0.86f, 0.14f);
-    glScalef(0.26f, 0.16f, 0.22f);
+    glTranslatef(0.0f, 4.38f, 0.14f);
     glColor3f(0.98f, 0.95f, 0.85f);
-    drawSolidSphere(0.16f, 12, 8);
+    drawSolidSphere(0.42f, 12, 8);
     glPopMatrix();
   }
   glPopMatrix();
