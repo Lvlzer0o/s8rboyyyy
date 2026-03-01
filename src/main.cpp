@@ -11,13 +11,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
-#include <deque>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include "player.hpp"
+#include "agent_orchestrator.hpp"
+#include "input_controller.hpp"
 #include "world.hpp"
 
 namespace
@@ -103,177 +104,6 @@ struct ObjModel
   bool loaded = false;
 };
 
-enum class AgentRole
-{
-  VisualUnderstanding,
-  Physics,
-  Rigging,
-  RenderExecution,
-  BlenderBridge,
-};
-
-struct AgentNode
-{
-  AgentRole role = AgentRole::VisualUnderstanding;
-  std::string capabilities;
-  std::string lastAction;
-  bool online = true;
-  float latencyMs = 0.0f;
-};
-
-struct RenderJob
-{
-  std::string objPath;
-  bool requiresPhysicsBake = true;
-  bool requiresRigging = true;
-  bool dispatchToRuntime = true;
-};
-
-struct AgentOrchestrator
-{
-  std::vector<AgentNode> agents;
-  std::deque<std::string> eventLog;
-  size_t maxLogEntries = 14;
-  bool initialized = false;
-
-  void logEvent(const std::string& event)
-  {
-    eventLog.push_back(event);
-    if (eventLog.size() > maxLogEntries)
-    {
-      eventLog.pop_front();
-    }
-  }
-
-  AgentNode* find(AgentRole role)
-  {
-    for (auto& agent : agents)
-    {
-      if (agent.role == role)
-      {
-        return &agent;
-      }
-    }
-    return nullptr;
-  }
-
-  bool ensureOnline(AgentRole role, const std::string& missingMessage)
-  {
-    AgentNode* agent = find(role);
-    if (!agent || !agent->online)
-    {
-      logEvent(missingMessage);
-      return false;
-    }
-    return true;
-  }
-
-  void bootstrap()
-  {
-    if (initialized)
-    {
-      return;
-    }
-
-    agents = {
-      {AgentRole::VisualUnderstanding, "Semantic mesh analysis and material intent extraction", "Idle", true, 6.0f},
-      {AgentRole::Physics, "Collider synthesis and center-of-mass recommendations", "Idle", true, 4.0f},
-      {AgentRole::Rigging, "Skeleton planning and control rig compatibility", "Idle", true, 5.0f},
-      {AgentRole::RenderExecution, "Runtime LOD prep and GPU submission orchestration", "Idle", true, 3.0f},
-      {AgentRole::BlenderBridge, "Blender scene sync and Python bridge messaging", "Idle", true, 8.0f},
-    };
-    initialized = true;
-    logEvent("Agent mesh initialized with 5 specialists.");
-  }
-
-  bool submit(const RenderJob& job)
-  {
-    if (!initialized)
-    {
-      bootstrap();
-    }
-
-    if (!ensureOnline(AgentRole::VisualUnderstanding, "Visual Understanding agent unavailable."))
-    {
-      return false;
-    }
-    if (!ensureOnline(AgentRole::RenderExecution, "Render Execution agent unavailable."))
-    {
-      return false;
-    }
-    if (!ensureOnline(AgentRole::BlenderBridge, "Blender Bridge agent unavailable."))
-    {
-      return false;
-    }
-    if (job.requiresPhysicsBake && !ensureOnline(AgentRole::Physics, "Physics agent unavailable."))
-    {
-      return false;
-    }
-    if (job.requiresRigging && !ensureOnline(AgentRole::Rigging, "Rigging agent unavailable."))
-    {
-      return false;
-    }
-
-    // Cache agent pointers after availability has been ensured.
-    auto* visualAgent = find(AgentRole::VisualUnderstanding);
-    auto* renderExecAgent = job.dispatchToRuntime ? find(AgentRole::RenderExecution) : nullptr;
-    auto* bridgeAgent = find(AgentRole::BlenderBridge);
-    auto* physicsAgent = job.requiresPhysicsBake ? find(AgentRole::Physics) : nullptr;
-    auto* riggingAgent = job.requiresRigging ? find(AgentRole::Rigging) : nullptr;
-
-    if (visualAgent)
-    {
-      visualAgent->lastAction = "Parsed geometric semantics for " + job.objPath;
-    }
-    logEvent("Visual Understanding: inferred topology constraints for " + job.objPath);
-
-    if (job.requiresPhysicsBake && physicsAgent)
-    {
-      physicsAgent->lastAction = "Generated collider envelopes and mass profile";
-      logEvent("Physics: generated collider set + friction profile.");
-    }
-
-    if (job.requiresRigging && riggingAgent)
-    {
-      riggingAgent->lastAction = "Created rig contract and joint hierarchy proposal";
-      logEvent("Rigging: authored animation-ready skeleton metadata.");
-    }
-
-    if (bridgeAgent)
-    {
-      bridgeAgent->lastAction = "Synced job payload to Blender automation bridge";
-    }
-    logEvent("Blender Bridge: dispatched sync command for editable scene graph.");
-
-    if (job.dispatchToRuntime && renderExecAgent)
-    {
-      renderExecAgent->lastAction = "Prepared draw-ready runtime asset manifest";
-      logEvent("Render Execution: queued runtime manifest for in-game renderer.");
-    }
-
-    return true;
-  }
-};
-
-const char* agentRoleName(AgentRole role)
-{
-  switch (role)
-  {
-    case AgentRole::VisualUnderstanding:
-      return "Visual Understanding";
-    case AgentRole::Physics:
-      return "Physics";
-    case AgentRole::Rigging:
-      return "Rigging";
-    case AgentRole::RenderExecution:
-      return "Render Execution";
-    case AgentRole::BlenderBridge:
-      return "Blender Bridge";
-    default:
-      return "Unknown";
-  }
-}
-
 void drawDeck(float flex = 0.0f);
 
 enum class GameState
@@ -300,8 +130,7 @@ bool g_skyHdriReady = false;
 SDL_Window* g_window = nullptr;
 SDL_GLContext g_glContext = nullptr;
 bool g_running = true;
-std::vector<bool> g_keys(SDL_NUM_SCANCODES, false);
-bool g_jumpQueued = false;
+InputController g_inputController;
 bool g_paused = false;
 float g_menuYaw = 0.0f;
 float g_pausePulse = 0.0f;
@@ -1412,22 +1241,22 @@ void winRun()
 
 bool forwardPressed()
 {
-  return g_keys[SDL_SCANCODE_W] || g_keys[SDL_SCANCODE_UP];
+  return g_inputController.isDown(SDL_SCANCODE_W) || g_inputController.isDown(SDL_SCANCODE_UP);
 }
 
 bool backwardPressed()
 {
-  return g_keys[SDL_SCANCODE_S] || g_keys[SDL_SCANCODE_DOWN];
+  return g_inputController.isDown(SDL_SCANCODE_S) || g_inputController.isDown(SDL_SCANCODE_DOWN);
 }
 
 bool leftPressed()
 {
-  return g_keys[SDL_SCANCODE_A] || g_keys[SDL_SCANCODE_LEFT];
+  return g_inputController.isDown(SDL_SCANCODE_A) || g_inputController.isDown(SDL_SCANCODE_LEFT);
 }
 
 bool rightPressed()
 {
-  return g_keys[SDL_SCANCODE_D] || g_keys[SDL_SCANCODE_RIGHT];
+  return g_inputController.isDown(SDL_SCANCODE_D) || g_inputController.isDown(SDL_SCANCODE_RIGHT);
 }
 
 const char* trickStateLabel(TrickState state)
@@ -1474,8 +1303,8 @@ InputState buildInputState()
   input.forwardPressed = forwardPressed();
   input.backwardPressed = backwardPressed();
   input.turnAxis = (rightPressed() ? 1.0f : 0.0f) - (leftPressed() ? 1.0f : 0.0f);
-  input.jumpPressed = g_jumpQueued;
-  input.flipPressed = g_keys[SDL_SCANCODE_LSHIFT] || g_keys[SDL_SCANCODE_RSHIFT];
+  input.jumpPressed = g_inputController.jumpQueued();
+  input.flipPressed = g_inputController.isDown(SDL_SCANCODE_LSHIFT) || g_inputController.isDown(SDL_SCANCODE_RSHIFT);
   return input;
 }
 
@@ -3280,7 +3109,7 @@ void tick()
   {
     const InputState input = buildInputState();
     const bool manualWipeout = updatePlayer(dt, input);
-    g_jumpQueued = false;
+    g_inputController.setJumpQueued(false);
     if (manualWipeout)
     {
       loseLife();
@@ -3311,7 +3140,7 @@ void setRunStateForKey(SDL_Keycode key)
   switch (key)
   {
     case ' ':
-      g_jumpQueued = true;
+      g_inputController.setJumpQueued(true);
       break;
     case 'p':
     case 'P':
@@ -3351,23 +3180,17 @@ void setRunStateForKey(SDL_Keycode key)
 
 void onKeyDown(SDL_Scancode scancode, SDL_Keycode key)
 {
-  if (scancode < g_keys.size())
-  {
-    g_keys[scancode] = true;
-  }
+  g_inputController.setDown(scancode, true);
 
   setRunStateForKey(key);
 }
 
 void onKeyUp(SDL_Scancode scancode, SDL_Keycode key)
 {
-  if (scancode < g_keys.size())
-  {
-    g_keys[scancode] = false;
-  }
+  g_inputController.setDown(scancode, false);
   if (key == SDLK_SPACE)
   {
-    g_jumpQueued = false;
+    g_inputController.setJumpQueued(false);
   }
 }
 
@@ -3460,48 +3283,12 @@ void shutdownGameAssets()
 
 void handleInput()
 {
-  SDL_Event event;
-
-  while (SDL_PollEvent(&event))
-  {
-    switch (event.type)
-    {
-      case SDL_QUIT:
-        g_running = false;
-        break;
-      case SDL_WINDOWEVENT:
-        if (event.window.event == SDL_WINDOWEVENT_RESIZED)
-        {
-          onReshape(event.window.data1, event.window.data2);
-        }
-        break;
-      case SDL_KEYDOWN:
-      {
-        const SDL_KeyboardEvent& e = event.key;
-        if (e.repeat)
-        {
-          break;
-        }
-
-        if (e.keysym.sym == SDLK_ESCAPE)
-        {
-          onEscapePressed();
-          break;
-        }
-
-        onKeyDown(e.keysym.scancode, e.keysym.sym);
-        break;
-      }
-      case SDL_KEYUP:
-      {
-        const SDL_KeyboardEvent& e = event.key;
-        onKeyUp(e.keysym.scancode, e.keysym.sym);
-        break;
-      }
-      default:
-        break;
-    }
-  }
+  g_inputController.handleEvents(
+    []() { g_running = false; },
+    [](int w, int h) { onReshape(w, h); },
+    [](SDL_Scancode scancode, SDL_Keycode key) { onKeyDown(scancode, key); },
+    [](SDL_Scancode scancode, SDL_Keycode key) { onKeyUp(scancode, key); },
+    []() { onEscapePressed(); });
 }
 
 } // namespace

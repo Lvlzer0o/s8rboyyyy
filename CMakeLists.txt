@@ -33,6 +33,8 @@ add_executable(oneshot-skate
   src/player.cpp
   src/world.cpp
   src/tricks.cpp
+  src/agent_orchestrator.cpp
+  src/input_controller.cpp
 )
 
 target_include_directories(oneshot-skate PRIVATE
