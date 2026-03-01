@@ -32,7 +32,6 @@ constexpr float GRIND_ENTRY_BONUS = 150;
 constexpr float GRIND_EXIT_BONUS = 85;
 constexpr float GRIND_SCORE_RATE = 140.0f;
 constexpr float GRIND_SPEED_MULT = 1.012f;
-constexpr float SEGMENT_LENGTH = 180.0f;
 constexpr int SEGMENT_COUNT = 12;
 constexpr int GROUND_SAMPLES = 72;
 
@@ -142,7 +141,7 @@ struct AgentOrchestrator
     eventLog.push_back(event);
     if (eventLog.size() > maxLogEntries)
     {
-      eventLog.erase(eventLog.begin());
+      eventLog.pop_front();
     }
   }
 
@@ -324,28 +323,6 @@ AgentOrchestrator g_agentOrchestrator;
 
 TTF_Font* g_font = nullptr;
 
-float terrainHeight(float x, float z)
-{
-  return std::sin(z * 0.05f) * 1.2f +
-    std::cos(x * 0.07f) * 1.1f +
-    std::sin((x + z) * 0.028f) * 0.7f +
-    std::cos((x - z * 0.9f) * 0.02f) * 0.45f;
-}
-
-Vec3 terrainNormal(float x, float z)
-{
-  const float e = 0.28f;
-  float hX1 = terrainHeight(x - e, z);
-  float hX2 = terrainHeight(x + e, z);
-  float hZ1 = terrainHeight(x, z - e);
-  float hZ2 = terrainHeight(x, z + e);
-  float dX = (hX2 - hX1) / (2.0f * e);
-  float dZ = (hZ2 - hZ1) / (2.0f * e);
-  Vec3 n{-dX, 1.0f, -dZ};
-  float invLen = 1.0f / (std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z));
-  return {n.x * invLen, n.y * invLen, n.z * invLen};
-}
-
 float olliePopEnvelope(float timer)
 {
   if (timer <= 0.0f)
@@ -370,7 +347,6 @@ std::string locateAssetPath(const char* relativePath)
   std::vector<std::filesystem::path> candidates;
   candidates.push_back(rel);
   candidates.push_back(std::filesystem::path("..") / rel);
-  candidates.push_back(std::filesystem::path("../") / rel);
   candidates.push_back(std::filesystem::path("../..") / rel);
 
   try
@@ -416,6 +392,20 @@ bool readPPMToken(std::istream& in, std::string& out)
     return static_cast<bool>(in >> out);
   }
   return false;
+}
+
+GLuint uploadRGBTexture(int width, int height, const unsigned char* pixels, GLint wrapT = GL_REPEAT)
+{
+  GLuint textureId = 0;
+  glGenTextures(1, &textureId);
+  glBindTexture(GL_TEXTURE_2D, textureId);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrapT);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels);
+  return textureId;
 }
 
 bool loadPPMTexture(const std::string& path, GLuint& textureId)
@@ -504,15 +494,7 @@ bool loadPPMTexture(const std::string& path, GLuint& textureId)
     }
   }
 
-  glGenTextures(1, &textureId);
-  glBindTexture(GL_TEXTURE_2D, textureId);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
-
+  textureId = uploadRGBTexture(width, height, pixels.data());
   return true;
 }
 
@@ -545,17 +527,7 @@ GLuint createFallbackSkateTexture()
     }
   }
 
-  GLuint textureId = 0;
-  glGenTextures(1, &textureId);
-  glBindTexture(GL_TEXTURE_2D, textureId);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, SKATEBOARD_TEX_W, SKATEBOARD_TEX_H, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
-
-  return textureId;
+  return uploadRGBTexture(SKATEBOARD_TEX_W, SKATEBOARD_TEX_H, pixels.data());
 }
 
 GLuint createFallbackSkyTexture()
@@ -585,16 +557,7 @@ GLuint createFallbackSkyTexture()
     }
   }
 
-  GLuint textureId = 0;
-  glGenTextures(1, &textureId);
-  glBindTexture(GL_TEXTURE_2D, textureId);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, kSkyW, kSkyH, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
-  return textureId;
+  return uploadRGBTexture(kSkyW, kSkyH, pixels.data(), GL_CLAMP_TO_EDGE);
 }
 
 bool parseObjIndex(const std::string& token, int count, int& out)

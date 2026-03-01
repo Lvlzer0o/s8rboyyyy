@@ -8,6 +8,7 @@ namespace
 {
 
 constexpr float PI = 3.14159265358979323846f;
+constexpr float TERRAIN_NORMAL_EPSILON = 0.28f;
 constexpr float TERRAIN_Z_FREQ = 0.05f;
 constexpr float TERRAIN_X_FREQ = 0.07f;
 constexpr float TERRAIN_XZ_FREQ = 0.028f;
@@ -28,6 +29,8 @@ float randRange(float min, float max)
   return d(g_worldRng);
 }
 
+} // namespace
+
 float terrainHeight(float x, float z)
 {
   return std::sin(z * TERRAIN_Z_FREQ) * 1.2f +
@@ -36,7 +39,19 @@ float terrainHeight(float x, float z)
     std::cos((x - z * 0.9f) * TERRAIN_XZ_MIX_FREQ) * TERRAIN_XZ_MIX_AMP;
 }
 
+Vec3 terrainNormal(float x, float z)
+{
+  const float hX1 = terrainHeight(x - TERRAIN_NORMAL_EPSILON, z);
+  const float hX2 = terrainHeight(x + TERRAIN_NORMAL_EPSILON, z);
+  const float hZ1 = terrainHeight(x, z - TERRAIN_NORMAL_EPSILON);
+  const float hZ2 = terrainHeight(x, z + TERRAIN_NORMAL_EPSILON);
+  const float dX = (hX2 - hX1) / (2.0f * TERRAIN_NORMAL_EPSILON);
+  const float dZ = (hZ2 - hZ1) / (2.0f * TERRAIN_NORMAL_EPSILON);
+  return safeNormalize({-dX, 1.0f, -dZ});
 }
+
+namespace
+{
 
 void placeObstacleAhead(WorldState& world, std::size_t index, const Vec3& playerPosition)
 {
@@ -67,6 +82,8 @@ void placeCoinAhead(WorldState& world, std::size_t index, const Vec3& playerPosi
   coin.phase = randRange(0.0f, static_cast<float>(2.0f * PI));
 }
 
+} // namespace
+
 void initializeWorld(WorldState& world, const Vec3& playerPosition)
 {
   for (size_t i = 0; i < world.obstacles.size(); ++i)
@@ -82,25 +99,17 @@ void initializeWorld(WorldState& world, const Vec3& playerPosition)
 
 void resetWorld(WorldState& world, const Vec3& playerPosition)
 {
-  for (size_t i = 0; i < world.obstacles.size(); ++i)
-  {
-    placeObstacleAhead(world, i, playerPosition);
-  }
-
-  for (size_t i = 0; i < world.coins.size(); ++i)
-  {
-    placeCoinAhead(world, i, playerPosition);
-  }
+  initializeWorld(world, playerPosition);
 }
 
 void recycleWorld(WorldState& world, const Vec3& playerPosition, float dt)
 {
-  for (auto& obstacle : world.obstacles)
+  for (size_t i = 0; i < world.obstacles.size(); ++i)
   {
+    auto& obstacle = world.obstacles[i];
     if (obstacle.position.z < playerPosition.z - 40.0f)
     {
-      const size_t index = static_cast<size_t>(&obstacle - &world.obstacles[0]);
-      placeObstacleAhead(world, index, playerPosition);
+      placeObstacleAhead(world, i, playerPosition);
     }
 
     if (obstacle.hitCooldown > 0.0f)
