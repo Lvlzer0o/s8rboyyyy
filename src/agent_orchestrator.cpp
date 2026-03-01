@@ -61,7 +61,7 @@ bool AgentOrchestrator::submit(const RenderJob& job)
   {
     return false;
   }
-  if (!ensureOnline(AgentRole::RenderExecution, "Render Execution agent unavailable."))
+  if (job.dispatchToRuntime && !ensureOnline(AgentRole::RenderExecution, "Render Execution agent unavailable."))
   {
     return false;
   }
