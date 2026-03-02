@@ -1586,8 +1586,65 @@ void drawRect2D(float x0, float y0, float x1, float y1, float r, float g, float 
   glEnd();
 }
 
+void drawSoftDisc2D(float cx, float cy, float radius, float r, float g, float b, float alpha)
+{
+  constexpr int kSlices = 40;
+  glBegin(GL_TRIANGLE_FAN);
+  glColor4f(r, g, b, alpha);
+  glVertex2f(cx, cy);
+  glColor4f(r, g, b, 0.0f);
+  for (int i = 0; i <= kSlices; ++i)
+  {
+    const float a = TAU * static_cast<float>(i) / static_cast<float>(kSlices);
+    glVertex2f(cx + std::cos(a) * radius, cy + std::sin(a) * radius);
+  }
+  glEnd();
+}
+
+void drawCinematicVignette(float strength)
+{
+  const float a = std::clamp(strength, 0.0f, 1.0f) * 0.22f;
+  const float w = static_cast<float>(g_windowW);
+  const float h = static_cast<float>(g_windowH);
+  const float sideBand = w * 0.20f;
+  const float topBand = h * 0.18f;
+
+  glBegin(GL_QUADS);
+  glColor4f(0.0f, 0.03f, 0.04f, a);
+  glVertex2f(0.0f, 0.0f);
+  glVertex2f(0.0f, h);
+  glColor4f(0.0f, 0.03f, 0.04f, 0.0f);
+  glVertex2f(sideBand, h);
+  glVertex2f(sideBand, 0.0f);
+  glEnd();
+
+  glBegin(GL_QUADS);
+  glColor4f(0.0f, 0.03f, 0.04f, 0.0f);
+  glVertex2f(w - sideBand, 0.0f);
+  glVertex2f(w - sideBand, h);
+  glColor4f(0.0f, 0.03f, 0.04f, a);
+  glVertex2f(w, h);
+  glVertex2f(w, 0.0f);
+  glEnd();
+
+  glBegin(GL_QUADS);
+  glColor4f(0.0f, 0.02f, 0.03f, a * 0.95f);
+  glVertex2f(0.0f, h);
+  glVertex2f(w, h);
+  glColor4f(0.0f, 0.02f, 0.03f, 0.0f);
+  glVertex2f(w, h - topBand);
+  glVertex2f(0.0f, h - topBand);
+  glEnd();
+}
+
 void drawSkyGradient(float intensity)
 {
+  const GLboolean hadTexture = glIsEnabled(GL_TEXTURE_2D);
+  if (hadTexture)
+  {
+    glDisable(GL_TEXTURE_2D);
+  }
+
   glDisable(GL_DEPTH_TEST);
   glDisable(GL_LIGHTING);
 
@@ -1617,11 +1674,33 @@ void drawSkyGradient(float intensity)
   glVertex2f(0.0f, 0.0f);
   glEnd();
 
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  const float t = nowSeconds();
+  const float sunX = static_cast<float>(g_windowW) * (0.72f + std::sin(t * 0.03f) * 0.03f);
+  const float sunY = static_cast<float>(g_windowH) * (0.72f + std::cos(t * 0.02f) * 0.02f);
+  drawSoftDisc2D(sunX, sunY, static_cast<float>(g_windowH) * 0.55f, 1.0f, 0.86f, 0.58f, 0.11f * intensity);
+  drawSoftDisc2D(sunX, sunY, static_cast<float>(g_windowH) * 0.22f, 1.0f, 0.94f, 0.76f, 0.20f * intensity);
+
+  glBegin(GL_QUADS);
+  glColor4f(0.80f, 0.92f, 1.0f, 0.08f * intensity);
+  glVertex2f(0.0f, static_cast<float>(g_windowH) * 0.24f);
+  glVertex2f(static_cast<float>(g_windowW), static_cast<float>(g_windowH) * 0.24f);
+  glColor4f(0.80f, 0.92f, 1.0f, 0.0f);
+  glVertex2f(static_cast<float>(g_windowW), static_cast<float>(g_windowH) * 0.62f);
+  glVertex2f(0.0f, static_cast<float>(g_windowH) * 0.62f);
+  glEnd();
+  glDisable(GL_BLEND);
+
   glMatrixMode(GL_PROJECTION);
   glPopMatrix();
   glMatrixMode(GL_MODELVIEW);
   glPopMatrix();
 
+  if (hadTexture)
+  {
+    glEnable(GL_TEXTURE_2D);
+  }
   glEnable(GL_LIGHTING);
   glEnable(GL_DEPTH_TEST);
 }
@@ -2463,6 +2542,19 @@ void drawObstacle(const Obstacle& o)
     glScalef(0.05f, 0.6f, 0.05f);
     drawSolidCube(1.0f);
     glPopMatrix();
+
+    const float pulse = 0.5f + 0.5f * std::sin(nowSeconds() * 4.5f + o.position.z * 0.1f);
+    glDisable(GL_LIGHTING);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glColor4f(0.20f, 0.72f, 1.0f, 0.08f + pulse * 0.10f);
+    glPushMatrix();
+    glTranslatef(0.0f, 0.55f, 0.0f);
+    glScalef(3.0f, 0.30f, 0.34f);
+    drawSolidCube(1.0f);
+    glPopMatrix();
+    glDisable(GL_BLEND);
+    glEnable(GL_LIGHTING);
   }
   else
   {
@@ -2483,6 +2575,19 @@ void drawObstacle(const Obstacle& o)
     glColor3f(0.12f, 0.12f, 0.16f);
     drawSolidCube(1.0f);
     glPopMatrix();
+
+    const float pulse = 0.5f + 0.5f * std::sin(nowSeconds() * 5.4f + o.position.z * 0.2f);
+    glDisable(GL_LIGHTING);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glColor4f(1.0f, 0.54f, 0.24f, 0.04f + pulse * 0.07f);
+    glPushMatrix();
+    glTranslatef(0.0f, 0.72f, 0.0f);
+    glScalef(1.15f, 0.18f, 1.15f);
+    drawSolidCube(1.0f);
+    glPopMatrix();
+    glDisable(GL_BLEND);
+    glEnable(GL_LIGHTING);
   }
 
   glPopMatrix();
@@ -2509,7 +2614,21 @@ void drawCoin(Coin& c)
   drawSolidTorus(0.05f, 0.18f, 8, 16);
   glPopMatrix();
 
+  const float pulse = 0.5f + 0.5f * std::sin(nowSeconds() * 6.5f + c.phase * 3.0f);
+  glDisable(GL_LIGHTING);
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+  glDepthMask(GL_FALSE);
+  glColor4f(1.0f, 0.92f, 0.50f, 0.10f + pulse * 0.12f);
+  glPushMatrix();
+  const float haloScale = 0.95f + pulse * 0.30f;
+  glScalef(haloScale, haloScale, haloScale);
+  drawSolidSphere(0.62f, 14, 10);
   glPopMatrix();
+  glDepthMask(GL_TRUE);
+  glDisable(GL_BLEND);
+  glEnable(GL_LIGHTING);
+
   glPopMatrix();
 }
 
@@ -2809,6 +2928,51 @@ void drawSkidTrail(float speed)
   glPopMatrix();
 }
 
+void drawGroundContactShadow(float speed)
+{
+  const float groundY = terrainHeight(g_player.position.x, g_player.position.z);
+  const float hover = std::clamp(g_player.position.y - groundY, 0.0f, 4.8f);
+  const float hoverFade = std::clamp(1.0f - hover / 4.8f, 0.0f, 1.0f);
+  const float speedMix = std::clamp(speed / MAX_SPEED, 0.0f, 1.0f);
+  const float alpha = (0.10f + speedMix * 0.14f) * hoverFade;
+
+  if (alpha <= 0.01f)
+  {
+    return;
+  }
+
+  glPushMatrix();
+  glTranslatef(g_player.position.x, groundY + 0.035f, g_player.position.z);
+  glRotatef(g_player.yaw * DEG, 0.0f, 1.0f, 0.0f);
+
+  const float shadowLength = 1.20f + speedMix * 0.85f + (g_player.grounded ? 0.15f : 0.0f);
+  const float shadowWidth = 0.72f + speedMix * 0.24f;
+
+  glDisable(GL_LIGHTING);
+  glDisable(GL_TEXTURE_2D);
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  glDepthMask(GL_FALSE);
+
+  constexpr int kShadowSlices = 30;
+  glBegin(GL_TRIANGLE_FAN);
+  glColor4f(0.0f, 0.02f, 0.03f, alpha);
+  glVertex3f(0.0f, 0.0f, 0.0f);
+  glColor4f(0.0f, 0.02f, 0.03f, 0.0f);
+  for (int i = 0; i <= kShadowSlices; ++i)
+  {
+    const float a = TAU * static_cast<float>(i) / static_cast<float>(kShadowSlices);
+    glVertex3f(std::cos(a) * shadowWidth, 0.0f, std::sin(a) * shadowLength);
+  }
+  glEnd();
+
+  glDepthMask(GL_TRUE);
+  glDisable(GL_BLEND);
+  glEnable(GL_TEXTURE_2D);
+  glEnable(GL_LIGHTING);
+  glPopMatrix();
+}
+
 void drawAgentOrchestrationStatus()
 {
   const float left = static_cast<float>(g_windowW - 420);
@@ -2823,9 +2987,7 @@ void drawAgentOrchestrationStatus()
   int lineY = g_windowH - 46;
   for (const auto& agent : g_agentOrchestrator.agents)
   {
-    std::string status = std::string(agentRoleName(agent.role)) +
-      (agent.online ? " [online]" : " [offline]") +
-      "  " + std::to_string(static_cast<int>(agent.latencyMs)) + "ms";
+    const std::string status = g_agentOrchestrator.formatAgentStatus(agent);
     drawTextWithShadow(static_cast<int>(left + 10.0f), lineY, status, agent.online ? 0.92f : 0.65f);
     lineY -= 16;
     if (lineY < g_windowH - 132)
@@ -2911,13 +3073,16 @@ void drawHUD()
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+  const float speed = length2D(g_player.velocity);
+  const float speedMix = std::clamp(speed / MAX_SPEED, 0.0f, 1.0f);
+  drawCinematicVignette(0.35f + speedMix * 0.45f);
+
   drawRect2D(8.0f, static_cast<float>(g_windowH - 170), static_cast<float>(220), static_cast<float>(g_windowH - 8), 0.03f, 0.07f, 0.12f, 0.55f);
   drawRect2D(10.0f, static_cast<float>(g_windowH - 168), 218.0f, static_cast<float>(g_windowH - 10), 0.06f, 0.16f, 0.24f, 0.40f);
 
   glColor3f(0.95f, 0.98f, 1.0f);
   char buf[128];
 
-  const float speed = length2D(g_player.velocity);
   std::snprintf(buf, sizeof(buf), "Speed: %.1f", speed);
   drawTextWithShadow(14, g_windowH - 26, buf, 0.96f);
 
@@ -3056,6 +3221,7 @@ void setupSceneLighting()
   glEnable(GL_LIGHT1);
   glEnable(GL_COLOR_MATERIAL);
   glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+  glLightModeli(GL_LIGHT_MODEL_LOCAL_VIEWER, GL_TRUE);
 
   const float t = nowSeconds() * 0.1f;
   const float amb = g_skyHdriReady ? (0.36f + 0.03f * std::sin(t * 0.45f)) : (0.22f + 0.06f * std::sin(t * 0.7f));
@@ -3102,12 +3268,33 @@ void setupSceneLighting()
   glLightfv(GL_LIGHT1, GL_SPECULAR, lightSpecular1);
 }
 
+void updateAtmosphericFog(float speed)
+{
+  const float speedMix = std::clamp(speed / MAX_SPEED, 0.0f, 1.0f);
+  const float t = nowSeconds();
+  const float wave = 0.5f + 0.5f * std::sin(t * 0.22f + g_player.position.z * 0.012f);
+  const float hdriBias = g_skyHdriReady ? 1.0f : 0.68f;
+
+  GLfloat fogColor[] = {
+    std::clamp(SKY_R1 * 0.62f + SKY_R2 * 0.18f + wave * 0.02f * hdriBias, 0.0f, 1.0f),
+    std::clamp(SKY_G1 * 0.66f + SKY_G2 * 0.19f + wave * 0.02f * hdriBias, 0.0f, 1.0f),
+    std::clamp(SKY_B1 * 0.70f + SKY_B2 * 0.22f + wave * 0.03f * hdriBias, 0.0f, 1.0f),
+    1.0f
+  };
+  glFogfv(GL_FOG_COLOR, fogColor);
+
+  const float baseDensity = g_skyHdriReady ? 0.0096f : 0.0120f;
+  const float density = baseDensity + speedMix * 0.0017f + wave * 0.0012f;
+  glFogf(GL_FOG_DENSITY, density);
+}
+
 void renderScene()
 {
   setFlashColor();
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
   glEnable(GL_DEPTH_TEST);
+  const float sceneSpeed = length2D(g_player.velocity);
   if (!g_skyHdriTextureId)
   {
     drawSkyGradient(1.0f - g_player.invuln * 0.3f);
@@ -3115,14 +3302,15 @@ void renderScene()
 
   glMatrixMode(GL_PROJECTION);
   glLoadIdentity();
-  gluPerspective(60.0, static_cast<double>(g_windowW) / static_cast<double>(g_windowH), 0.1, 1600.0);
+  const double dynamicFov = 60.0 + static_cast<double>(std::clamp(sceneSpeed / MAX_SPEED, 0.0f, 1.0f)) * 8.0;
+  gluPerspective(dynamicFov, static_cast<double>(g_windowW) / static_cast<double>(g_windowH), 0.1, 1600.0);
 
   glMatrixMode(GL_MODELVIEW);
   glLoadIdentity();
 
   const float camYaw = activeCameraYaw();
   const float baseLookDistance = g_state == GameState::Menu ? 18.0f : 14.0f;
-  const float speed = length2D(g_player.velocity);
+  const float speed = sceneSpeed;
   const float speedBias = std::min(0.36f, speed * 0.013f);
   const float lookDistance = baseLookDistance - speedBias * 2.0f;
   const float camY = g_player.position.y + (g_state == GameState::Menu ? 8.5f : 6.6f) - speedBias * 0.9f;
@@ -3144,6 +3332,7 @@ void renderScene()
     drawHdriSkyDome({camX, camY, camZ});
   }
   setupSceneLighting();
+  updateAtmosphericFog(speed);
 
   drawWorld();
 
@@ -3157,7 +3346,8 @@ void renderScene()
     drawCoin(c);
   }
 
-  drawSkidTrail(length2D(g_player.velocity));
+  drawSkidTrail(speed);
+  drawGroundContactShadow(speed);
   drawPlayer();
 
   drawHUD();
@@ -3230,7 +3420,7 @@ void tick()
       }
     }
 
-    g_jumpQueued = false;
+    g_inputController.setJumpQueued(false);
   }
   else
   {
@@ -3331,7 +3521,8 @@ void setupGL()
   GLfloat fogColor[] = { SKY_R1 * 0.7f, SKY_G1 * 0.8f, SKY_B1 * 0.9f, 1.0f };
   glFogfv(GL_FOG_COLOR, fogColor);
   glFogf(GL_FOG_DENSITY, 0.0125f);
-  glHint(GL_FOG_HINT, GL_DONT_CARE);
+  glHint(GL_FOG_HINT, GL_NICEST);
+  glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST);
   glFogf(GL_FOG_START, 45.0f);
   glFogf(GL_FOG_END, 700.0f);
 
