@@ -9,14 +9,32 @@ void AgentOrchestrator::logEvent(const std::string& event)
   }
 }
 
-AgentNode* AgentOrchestrator::find(AgentRole role)
+void AgentOrchestrator::invalidateRoleIndex()
 {
+  roleIndexValid = false;
+}
+
+void AgentOrchestrator::rebuildRoleIndex() const
+{
+  roleIndex.clear();
   for (auto& agent : agents)
   {
-    if (agent.role == role)
-    {
-      return &agent;
-    }
+    roleIndex[agent.role] = &agent;
+  }
+  roleIndexValid = true;
+}
+
+AgentNode* AgentOrchestrator::find(AgentRole role)
+{
+  if (!roleIndexValid)
+  {
+    rebuildRoleIndex();
+  }
+
+  const auto it = roleIndex.find(role);
+  if (it != roleIndex.end())
+  {
+    return it->second;
   }
   return nullptr;
 }
@@ -46,17 +64,14 @@ void AgentOrchestrator::bootstrap()
     {AgentRole::RenderExecution, "Runtime LOD prep and GPU submission orchestration", "Idle", true, 3.0f},
     {AgentRole::BlenderBridge, "Blender scene sync and Python bridge messaging", "Idle", true, 8.0f},
   };
+
+  rebuildRoleIndex();
   initialized = true;
   logEvent("Agent mesh initialized with 5 specialists.");
 }
 
-bool AgentOrchestrator::submit(const RenderJob& job)
+bool AgentOrchestrator::validateSubmission(const RenderJob& job)
 {
-  if (!initialized)
-  {
-    bootstrap();
-  }
-
   if (!ensureOnline(AgentRole::VisualUnderstanding, "Visual Understanding agent unavailable."))
   {
     return false;
@@ -77,38 +92,84 @@ bool AgentOrchestrator::submit(const RenderJob& job)
   {
     return false;
   }
+  return true;
+}
+
+void AgentOrchestrator::logAgentActivity(
+  AgentNode& agent,
+  const std::string& lastAction,
+  const std::string& eventLogEntry)
+{
+  agent.lastAction = lastAction;
+  logEvent(eventLogEntry);
+}
+
+void AgentOrchestrator::orchestrateRoleActions(const RenderJob& job,
+                                              AgentNode* visualAgent,
+                                              AgentNode* renderExecAgent,
+                                              AgentNode* bridgeAgent,
+                                              AgentNode* physicsAgent,
+                                              AgentNode* rigAgent)
+{
+  logAgentActivity(
+    *visualAgent,
+    "Parsed " + job.objPath + " for topology and material semantics",
+    "Visual Understanding: analyzed " + job.objPath + ".");
+
+  if (physicsAgent)
+  {
+    logAgentActivity(
+      *physicsAgent,
+      "Generated collider hulls and validated COM for " + job.objPath,
+      "Physics: authored collider bake profile for " + job.objPath + ".");
+  }
+
+  if (rigAgent)
+  {
+    logAgentActivity(*rigAgent,
+      "Mapped deformation controls and exported rig bindings",
+      "Rigging: prepared deformation control graph.");
+  }
+
+  logAgentActivity(*bridgeAgent,
+    "Synchronized asset package with Blender bridge endpoint",
+    "Blender Bridge: synchronized runtime package for " + job.objPath + ".");
+
+  if (renderExecAgent)
+  {
+    logAgentActivity(*renderExecAgent,
+      "Prepared draw-ready runtime asset manifest",
+      "Render Execution: queued runtime manifest for in-game renderer.");
+  }
+}
+
+bool AgentOrchestrator::submit(const RenderJob& job)
+{
+  if (!initialized)
+  {
+    bootstrap();
+  }
+
+  if (!validateSubmission(job))
+  {
+    return false;
+  }
 
   auto* visualAgent = find(AgentRole::VisualUnderstanding);
   auto* renderExecAgent = job.dispatchToRuntime ? find(AgentRole::RenderExecution) : nullptr;
   auto* bridgeAgent = find(AgentRole::BlenderBridge);
+  auto* physicsAgent = job.requiresPhysicsBake ? find(AgentRole::Physics) : nullptr;
+  auto* rigAgent = job.requiresRigging ? find(AgentRole::Rigging) : nullptr;
 
-  visualAgent->lastAction = "Parsed " + job.objPath + " for topology and material semantics";
-  logEvent("Visual Understanding: analyzed " + job.objPath + ".");
-
-  if (job.requiresPhysicsBake)
-  {
-    auto* physicsAgent = find(AgentRole::Physics);
-    physicsAgent->lastAction = "Generated collider hulls and validated COM for " + job.objPath;
-    logEvent("Physics: authored collider bake profile for " + job.objPath + ".");
-  }
-
-  if (job.requiresRigging)
-  {
-    auto* rigAgent = find(AgentRole::Rigging);
-    rigAgent->lastAction = "Mapped deformation controls and exported rig bindings";
-    logEvent("Rigging: prepared deformation control graph.");
-  }
-
-  bridgeAgent->lastAction = "Synchronized asset package with Blender bridge endpoint";
-  logEvent("Blender Bridge: synchronized runtime package for " + job.objPath + ".");
-
-  if (renderExecAgent)
-  {
-    renderExecAgent->lastAction = "Prepared draw-ready runtime asset manifest";
-    logEvent("Render Execution: queued runtime manifest for in-game renderer.");
-  }
-
+  orchestrateRoleActions(job, visualAgent, renderExecAgent, bridgeAgent, physicsAgent, rigAgent);
   return true;
+}
+
+std::string AgentOrchestrator::formatAgentStatus(const AgentNode& agent) const
+{
+  return std::string(agentRoleName(agent.role)) +
+    (agent.online ? " [online]" : " [offline]") +
+    "  " + std::to_string(static_cast<int>(agent.latencyMs)) + "ms";
 }
 
 const char* agentRoleName(AgentRole role)
