@@ -8,6 +8,8 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -161,18 +163,50 @@ struct CachedTextTexture
   GLuint textureId = 0;
   int width = 0;
   int height = 0;
+  std::uint64_t lastUsedTick = 0;
 };
 
 std::unordered_map<std::string, CachedTextTexture> g_textTextureCache;
+std::uint64_t g_textTextureUseTick = 0;
+constexpr std::size_t MAX_TEXT_CACHE_ENTRIES = 256;
+
+void destroyCachedTextTexture(CachedTextTexture& texture)
+{
+  if (texture.textureId != 0)
+  {
+    glDeleteTextures(1, &texture.textureId);
+    texture.textureId = 0;
+  }
+}
+
+void evictOldestTextTextureIfNeeded()
+{
+  if (g_textTextureCache.size() < MAX_TEXT_CACHE_ENTRIES)
+  {
+    return;
+  }
+
+  auto oldest = g_textTextureCache.end();
+  for (auto it = g_textTextureCache.begin(); it != g_textTextureCache.end(); ++it)
+  {
+    if (oldest == g_textTextureCache.end() || it->second.lastUsedTick < oldest->second.lastUsedTick)
+    {
+      oldest = it;
+    }
+  }
+
+  if (oldest != g_textTextureCache.end())
+  {
+    destroyCachedTextTexture(oldest->second);
+    g_textTextureCache.erase(oldest);
+  }
+}
 
 void clearTextTextureCache()
 {
   for (auto& entry : g_textTextureCache)
   {
-    if (entry.second.textureId != 0)
-    {
-      glDeleteTextures(1, &entry.second.textureId);
-    }
+    destroyCachedTextTexture(entry.second);
   }
   g_textTextureCache.clear();
 }
@@ -1128,10 +1162,13 @@ void drawText(int x, int y, const std::string& s)
     return;
   }
 
+  const std::uint64_t useTick = ++g_textTextureUseTick;
   CachedTextTexture* cached = nullptr;
   auto found = g_textTextureCache.find(s);
   if (found == g_textTextureCache.end())
   {
+    evictOldestTextTextureIfNeeded();
+
     SDL_Color color{240, 250, 255, 255};
     SDL_Surface* textSurface = TTF_RenderUTF8_Blended(g_font, s.c_str(), color);
     if (!textSurface)
@@ -1149,6 +1186,7 @@ void drawText(int x, int y, const std::string& s)
     CachedTextTexture newTexture;
     newTexture.width = converted->w;
     newTexture.height = converted->h;
+    newTexture.lastUsedTick = useTick;
     glGenTextures(1, &newTexture.textureId);
     glBindTexture(GL_TEXTURE_2D, newTexture.textureId);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -1163,6 +1201,7 @@ void drawText(int x, int y, const std::string& s)
   else
   {
     cached = &found->second;
+    cached->lastUsedTick = useTick;
   }
 
   const float w = static_cast<float>(cached->width);
@@ -3243,6 +3282,10 @@ void tick()
     while (g_fixedPhysicsAccumulator >= FIXED_PHYSICS_STEP)
     {
       const InputState input = buildInputState();
+      if (input.jumpPressed)
+      {
+        g_inputController.setJumpQueued(false);
+      }
       refreshPlayerGroundState();
       const bool manualWipeout = updatePlayer(FIXED_PHYSICS_STEP, input);
       if (manualWipeout)
@@ -3271,8 +3314,6 @@ void tick()
         break;
       }
     }
-
-    g_inputController.setJumpQueued(false);
   }
   else
   {
