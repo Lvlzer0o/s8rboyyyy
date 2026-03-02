@@ -166,9 +166,27 @@ struct CachedTextTexture
   std::uint64_t lastUsedTick = 0;
 };
 
+struct DynamicTextTextureSlot
+{
+  std::string text;
+  CachedTextTexture texture;
+};
+
+enum class HudTextSlot : std::size_t
+{
+  Speed = 0,
+  Score,
+  Distance,
+  Time,
+  Lives,
+  Trick,
+  Count,
+};
+
 std::unordered_map<std::string, CachedTextTexture> g_textTextureCache;
 std::uint64_t g_textTextureUseTick = 0;
 constexpr std::size_t MAX_TEXT_CACHE_ENTRIES = 256;
+std::array<DynamicTextTextureSlot, static_cast<std::size_t>(HudTextSlot::Count)> g_dynamicHudTextCache;
 
 void destroyCachedTextTexture(CachedTextTexture& texture)
 {
@@ -209,6 +227,12 @@ void clearTextTextureCache()
     destroyCachedTextTexture(entry.second);
   }
   g_textTextureCache.clear();
+
+  for (auto& slot : g_dynamicHudTextCache)
+  {
+    destroyCachedTextTexture(slot.texture);
+    slot.text.clear();
+  }
 }
 
 float olliePopEnvelope(float timer)
@@ -1225,6 +1249,92 @@ void drawText(int x, int y, const std::string& s)
   glDisable(GL_TEXTURE_2D);
 }
 
+void drawDynamicHudText(HudTextSlot slot, int x, int y, const std::string& s)
+{
+  if (s.empty() || !g_font)
+  {
+    return;
+  }
+
+  const std::size_t slotIndex = static_cast<std::size_t>(slot);
+  if (slotIndex >= g_dynamicHudTextCache.size())
+  {
+    return;
+  }
+
+  const std::uint64_t useTick = ++g_textTextureUseTick;
+  DynamicTextTextureSlot& cachedSlot = g_dynamicHudTextCache[slotIndex];
+  CachedTextTexture* cached = &cachedSlot.texture;
+  if (cachedSlot.text != s || cached->textureId == 0)
+  {
+    destroyCachedTextTexture(*cached);
+
+    SDL_Color color{240, 250, 255, 255};
+    SDL_Surface* textSurface = TTF_RenderUTF8_Blended(g_font, s.c_str(), color);
+    if (!textSurface)
+    {
+      return;
+    }
+
+    SDL_Surface* converted = SDL_ConvertSurfaceFormat(textSurface, SDL_PIXELFORMAT_RGBA32, 0);
+    SDL_FreeSurface(textSurface);
+    if (!converted)
+    {
+      return;
+    }
+
+    cached->width = converted->w;
+    cached->height = converted->h;
+    cached->lastUsedTick = useTick;
+    glGenTextures(1, &cached->textureId);
+    glBindTexture(GL_TEXTURE_2D, cached->textureId);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, converted->w, converted->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, converted->pixels);
+
+    SDL_FreeSurface(converted);
+    cachedSlot.text = s;
+  }
+  else
+  {
+    cached->lastUsedTick = useTick;
+  }
+
+  const float w = static_cast<float>(cached->width);
+  const float h = static_cast<float>(cached->height);
+  const float x0 = static_cast<float>(x);
+  const float y0 = static_cast<float>(y) - h;
+
+  glEnable(GL_TEXTURE_2D);
+  glBindTexture(GL_TEXTURE_2D, cached->textureId);
+  glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+  glBegin(GL_QUADS);
+  glTexCoord2f(0.0f, 1.0f);
+  glVertex2f(x0, y0);
+  glTexCoord2f(1.0f, 1.0f);
+  glVertex2f(x0 + w, y0);
+  glTexCoord2f(1.0f, 0.0f);
+  glVertex2f(x0 + w, y0 + h);
+  glTexCoord2f(0.0f, 0.0f);
+  glVertex2f(x0, y0 + h);
+  glEnd();
+  glDisable(GL_TEXTURE_2D);
+}
+
+void drawDynamicHudTextWithShadow(HudTextSlot slot, int x, int y, const std::string& s, float alpha = 1.0f)
+{
+  if (s.empty())
+  {
+    return;
+  }
+
+  glColor4f(0.02f, 0.04f, 0.09f, 0.85f * alpha);
+  drawDynamicHudText(slot, x + 1, y - 1, s);
+  glColor4f(0.97f, 0.99f, 1.0f, alpha);
+  drawDynamicHudText(slot, x, y, s);
+}
+
 void drawTextWithShadow(int x, int y, const std::string& s, float alpha = 1.0f)
 {
   if (s.empty())
@@ -1383,13 +1493,17 @@ std::string activeTrickLabel()
   return trickStateLabel(g_player.trickState);
 }
 
-InputState buildInputState()
+InputState buildInputState(bool consumeQueuedJump = false)
 {
   InputState input;
   input.forwardPressed = forwardPressed();
   input.backwardPressed = backwardPressed();
   input.turnAxis = (rightPressed() ? 1.0f : 0.0f) - (leftPressed() ? 1.0f : 0.0f);
   input.jumpPressed = g_inputController.jumpQueued();
+  if (consumeQueuedJump && input.jumpPressed)
+  {
+    g_inputController.setJumpQueued(false);
+  }
   input.flipPressed = g_inputController.isDown(SDL_SCANCODE_LSHIFT) || g_inputController.isDown(SDL_SCANCODE_RSHIFT);
   return input;
 }
@@ -3167,23 +3281,23 @@ void drawHUD()
   char buf[128];
 
   std::snprintf(buf, sizeof(buf), "Speed: %.1f", speed);
-  drawTextWithShadow(14, g_windowH - 26, buf, 0.96f);
+  drawDynamicHudTextWithShadow(HudTextSlot::Speed, 14, g_windowH - 26, buf, 0.96f);
 
   std::snprintf(buf, sizeof(buf), "Score: %d", g_player.score);
-  drawTextWithShadow(14, g_windowH - 44, buf, 0.96f);
+  drawDynamicHudTextWithShadow(HudTextSlot::Score, 14, g_windowH - 44, buf, 0.96f);
 
   std::snprintf(buf, sizeof(buf), "Distance: %.0f", g_player.distance);
-  drawTextWithShadow(14, g_windowH - 62, buf, 0.96f);
+  drawDynamicHudTextWithShadow(HudTextSlot::Distance, 14, g_windowH - 62, buf, 0.96f);
 
   std::snprintf(buf, sizeof(buf), "Time: %d", static_cast<int>(std::ceil(g_timeLeft)));
-  drawTextWithShadow(14, g_windowH - 80, buf, 0.96f);
+  drawDynamicHudTextWithShadow(HudTextSlot::Time, 14, g_windowH - 80, buf, 0.96f);
 
   std::snprintf(buf, sizeof(buf), "Lives: %d", g_player.lives);
-  drawTextWithShadow(14, g_windowH - 98, buf, 0.96f);
+  drawDynamicHudTextWithShadow(HudTextSlot::Lives, 14, g_windowH - 98, buf, 0.96f);
 
   const std::string trickLabel = activeTrickLabel();
   std::snprintf(buf, sizeof(buf), "Trick: %s", trickLabel.c_str());
-  drawTextWithShadow(14, g_windowH - 116, buf, 0.98f);
+  drawDynamicHudTextWithShadow(HudTextSlot::Trick, 14, g_windowH - 116, buf, 0.98f);
 
   if (!g_message.empty())
   {
@@ -3471,11 +3585,7 @@ void tick()
     g_fixedPhysicsAccumulator = std::min(g_fixedPhysicsAccumulator + frameDt, MAX_PHYSICS_CATCHUP);
     while (g_fixedPhysicsAccumulator >= FIXED_PHYSICS_STEP)
     {
-      const InputState input = buildInputState();
-      if (input.jumpPressed)
-      {
-        g_inputController.setJumpQueued(false);
-      }
+      const InputState input = buildInputState(true);
       refreshPlayerGroundState();
       const bool manualWipeout = updatePlayer(FIXED_PHYSICS_STEP, input);
       if (manualWipeout)
@@ -3505,7 +3615,6 @@ void tick()
       }
     }
 
-    g_inputController.setJumpQueued(false);
   }
   else
   {
