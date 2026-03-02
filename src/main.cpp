@@ -8,12 +8,15 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "player.hpp"
@@ -155,6 +158,59 @@ AgentOrchestrator g_agentOrchestrator;
 
 TTF_Font* g_font = nullptr;
 
+struct CachedTextTexture
+{
+  GLuint textureId = 0;
+  int width = 0;
+  int height = 0;
+  std::uint64_t lastUsedTick = 0;
+};
+
+std::unordered_map<std::string, CachedTextTexture> g_textTextureCache;
+std::uint64_t g_textTextureUseTick = 0;
+constexpr std::size_t MAX_TEXT_CACHE_ENTRIES = 256;
+
+void destroyCachedTextTexture(CachedTextTexture& texture)
+{
+  if (texture.textureId != 0)
+  {
+    glDeleteTextures(1, &texture.textureId);
+    texture.textureId = 0;
+  }
+}
+
+void evictOldestTextTextureIfNeeded()
+{
+  if (g_textTextureCache.size() < MAX_TEXT_CACHE_ENTRIES)
+  {
+    return;
+  }
+
+  auto oldest = g_textTextureCache.end();
+  for (auto it = g_textTextureCache.begin(); it != g_textTextureCache.end(); ++it)
+  {
+    if (oldest == g_textTextureCache.end() || it->second.lastUsedTick < oldest->second.lastUsedTick)
+    {
+      oldest = it;
+    }
+  }
+
+  if (oldest != g_textTextureCache.end())
+  {
+    destroyCachedTextTexture(oldest->second);
+    g_textTextureCache.erase(oldest);
+  }
+}
+
+void clearTextTextureCache()
+{
+  for (auto& entry : g_textTextureCache)
+  {
+    destroyCachedTextTexture(entry.second);
+  }
+  g_textTextureCache.clear();
+}
+
 float olliePopEnvelope(float timer)
 {
   if (timer <= 0.0f)
@@ -181,6 +237,15 @@ std::string locateAssetPath(const char* relativePath)
   candidates.push_back(std::filesystem::path("..") / rel);
   candidates.push_back(std::filesystem::path("../..") / rel);
 
+  if (char* basePathRaw = SDL_GetBasePath())
+  {
+    const std::filesystem::path basePath(basePathRaw);
+    SDL_free(basePathRaw);
+    candidates.push_back(basePath / rel);
+    candidates.push_back(basePath / ".." / rel);
+  }
+
+#if defined(__linux__)
   try
   {
     const std::filesystem::path exe = std::filesystem::canonical("/proc/self/exe");
@@ -192,6 +257,7 @@ std::string locateAssetPath(const char* relativePath)
   {
     // Ignore path lookup failures and continue with remaining candidates.
   }
+#endif
 
   for (const auto& c : candidates)
   {
@@ -1096,35 +1162,55 @@ void drawText(int x, int y, const std::string& s)
     return;
   }
 
-  SDL_Color color{240, 250, 255, 255};
-  SDL_Surface* textSurface = TTF_RenderUTF8_Blended(g_font, s.c_str(), color);
-  if (!textSurface)
+  const std::uint64_t useTick = ++g_textTextureUseTick;
+  CachedTextTexture* cached = nullptr;
+  auto found = g_textTextureCache.find(s);
+  if (found == g_textTextureCache.end())
   {
-    return;
+    evictOldestTextTextureIfNeeded();
+
+    SDL_Color color{240, 250, 255, 255};
+    SDL_Surface* textSurface = TTF_RenderUTF8_Blended(g_font, s.c_str(), color);
+    if (!textSurface)
+    {
+      return;
+    }
+
+    SDL_Surface* converted = SDL_ConvertSurfaceFormat(textSurface, SDL_PIXELFORMAT_RGBA32, 0);
+    SDL_FreeSurface(textSurface);
+    if (!converted)
+    {
+      return;
+    }
+
+    CachedTextTexture newTexture;
+    newTexture.width = converted->w;
+    newTexture.height = converted->h;
+    newTexture.lastUsedTick = useTick;
+    glGenTextures(1, &newTexture.textureId);
+    glBindTexture(GL_TEXTURE_2D, newTexture.textureId);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, converted->w, converted->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, converted->pixels);
+
+    SDL_FreeSurface(converted);
+    auto inserted = g_textTextureCache.emplace(s, newTexture);
+    cached = &inserted.first->second;
+  }
+  else
+  {
+    cached = &found->second;
+    cached->lastUsedTick = useTick;
   }
 
-  SDL_Surface* converted = SDL_ConvertSurfaceFormat(textSurface, SDL_PIXELFORMAT_RGBA32, 0);
-  SDL_FreeSurface(textSurface);
-  if (!converted)
-  {
-    return;
-  }
-
-  GLuint texture = 0;
-  glGenTextures(1, &texture);
-  glBindTexture(GL_TEXTURE_2D, texture);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, converted->w, converted->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, converted->pixels);
-
-  const float w = static_cast<float>(converted->w);
-  const float h = static_cast<float>(converted->h);
+  const float w = static_cast<float>(cached->width);
+  const float h = static_cast<float>(cached->height);
   const float x0 = static_cast<float>(x);
   const float y0 = static_cast<float>(y) - h;
 
   glEnable(GL_TEXTURE_2D);
-  glBindTexture(GL_TEXTURE_2D, texture);
+  glBindTexture(GL_TEXTURE_2D, cached->textureId);
   glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
   glBegin(GL_QUADS);
   glTexCoord2f(0.0f, 1.0f);
@@ -1137,9 +1223,6 @@ void drawText(int x, int y, const std::string& s)
   glVertex2f(x0, y0 + h);
   glEnd();
   glDisable(GL_TEXTURE_2D);
-
-  SDL_FreeSurface(converted);
-  glDeleteTextures(1, &texture);
 }
 
 void drawTextWithShadow(int x, int y, const std::string& s, float alpha = 1.0f)
@@ -3385,12 +3468,14 @@ void tick()
 
   if (g_state == GameState::Play && !g_paused)
   {
-    const InputState input = buildInputState();
-    const bool manualWipeout = updatePlayer(dt, input);
-    g_inputController.setJumpQueued(false);
-    if (manualWipeout)
+    g_fixedPhysicsAccumulator = std::min(g_fixedPhysicsAccumulator + frameDt, MAX_PHYSICS_CATCHUP);
+    while (g_fixedPhysicsAccumulator >= FIXED_PHYSICS_STEP)
     {
       const InputState input = buildInputState();
+      if (input.jumpPressed)
+      {
+        g_inputController.setJumpQueued(false);
+      }
       refreshPlayerGroundState();
       const bool manualWipeout = updatePlayer(FIXED_PHYSICS_STEP, input);
       if (manualWipeout)
@@ -3554,6 +3639,8 @@ void initGame()
 
 void shutdownGameAssets()
 {
+  clearTextTextureCache();
+
   if (g_skateboardModel.textureId)
   {
     glDeleteTextures(1, &g_skateboardModel.textureId);

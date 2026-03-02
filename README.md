@@ -13,7 +13,13 @@ Native desktop version of the skateboarding demo using SDL2 + OpenGL.
 On Debian/Ubuntu-like systems:
 
 ```bash
-sudo apt install build-essential cmake libsdl2-dev libsdl2-ttf-dev
+sudo apt install build-essential cmake libgl1-mesa-dev libglu1-mesa-dev libsdl2-dev libsdl2-ttf-dev
+```
+
+Or use the project helper script (recommended for cloud/dev containers):
+
+```bash
+./scripts/install_linux_deps.sh
 ```
 
 ## Build and Run
