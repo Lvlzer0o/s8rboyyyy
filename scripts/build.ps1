@@ -1,6 +1,7 @@
 param(
   [string]$BuildDir = "build",
   [int]$Jobs = 4,
+  [string[]]$CMakeArgs = @(),
   [switch]$CleanFirst
 )
 
@@ -60,7 +61,7 @@ else {
 }
 
 Write-Host "Configuring with CMake..."
-cmake -S . -B "$BuildDir"
+cmake -S . -B "$BuildDir" @CMakeArgs
 
 Write-Host "Building..."
 if ($CleanFirst) {

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <SDL2/SDL.h>
+#include "sdl_headers.hpp"
 
 #include <cstdint>
 #include <functional>

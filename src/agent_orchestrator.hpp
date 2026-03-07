@@ -46,8 +46,8 @@ struct AgentOrchestrator
   std::deque<std::string> eventLog;
   size_t maxLogEntries = 14;
   bool initialized = false;
-  mutable bool roleIndexValid = false;
-  mutable std::unordered_map<AgentRole, AgentNode*, AgentRoleHash> roleIndex;
+  bool roleIndexValid = false;
+  std::unordered_map<AgentRole, AgentNode*, AgentRoleHash> roleIndex;
 
   void logEvent(const std::string& event);
   AgentNode* find(AgentRole role);
@@ -68,7 +68,7 @@ private:
   void logAgentActivity(AgentNode& agent,
                         const std::string& lastAction,
                         const std::string& eventLogEntry);
-  void rebuildRoleIndex() const;
+  void rebuildRoleIndex();
 };
 
 const char* agentRoleName(AgentRole role);

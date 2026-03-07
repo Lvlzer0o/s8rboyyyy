@@ -90,7 +90,7 @@ struct Player
 };
 
 constexpr float GRAVITY = 33.0f;
-constexpr float ACCEL = 34.0f;
+constexpr float PLAYER_ACCEL = 34.0f;
 constexpr float BRAKE = 0.88f;
 constexpr float DRAG_GROUND = 0.985f;
 constexpr float DRAG_AIR = 0.996f;

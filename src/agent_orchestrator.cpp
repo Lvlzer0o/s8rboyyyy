@@ -14,7 +14,7 @@ void AgentOrchestrator::invalidateRoleIndex()
   roleIndexValid = false;
 }
 
-void AgentOrchestrator::rebuildRoleIndex() const
+void AgentOrchestrator::rebuildRoleIndex()
 {
   roleIndex.clear();
   for (auto& agent : agents)

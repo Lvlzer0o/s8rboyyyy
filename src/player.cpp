@@ -32,8 +32,8 @@ void handleMovement(
   {
     if (accelInput > 0.0f)
     {
-      g_player.velocity.x += forward.x * ACCEL * accelInput * dt;
-      g_player.velocity.z += forward.z * ACCEL * accelInput * dt;
+      g_player.velocity.x += forward.x * PLAYER_ACCEL * accelInput * dt;
+      g_player.velocity.z += forward.z * PLAYER_ACCEL * accelInput * dt;
     }
     else if (accelInput < 0.0f)
     {
@@ -46,8 +46,8 @@ void handleMovement(
   }
   else
   {
-    g_player.velocity.x += forward.x * ACCEL * accelInput * dt * 0.58f;
-    g_player.velocity.z += forward.z * ACCEL * accelInput * dt * 0.58f;
+    g_player.velocity.x += forward.x * PLAYER_ACCEL * accelInput * dt * 0.58f;
+    g_player.velocity.z += forward.z * PLAYER_ACCEL * accelInput * dt * 0.58f;
     g_player.velocity.x *= DRAG_AIR;
     g_player.velocity.z *= DRAG_AIR;
   }

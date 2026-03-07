@@ -15,6 +15,15 @@ constexpr float GRIND_EXIT_BONUS = 85.0f;
 constexpr float GRIND_SCORE_RATE = 140.0f;
 constexpr float GRIND_SPEED_MULT = 1.012f;
 
+Vec3 g_previousPlayerPos;
+bool g_previousPlayerPosReady = false;
+
+void syncPreviousPlayerPosition(const Vec3& playerPosition)
+{
+  g_previousPlayerPos = playerPosition;
+  g_previousPlayerPosReady = true;
+}
+
 bool intersectsAabb(
   const Vec3& centerA,
   const Vec3& halfExtentsA,
@@ -150,6 +159,7 @@ void resetRun(
   menuYaw = 0.0f;
 
   resetWorld(world, player.position);
+  syncPreviousPlayerPosition(player.position);
 
   message = "Ride the line";
   messageTimer = 0.75f;
@@ -254,11 +264,14 @@ void updateObstaclesAndCoins(
   std::string& overlayTitle,
   std::string& overlayHint)
 {
-  static Vec3 s_previousPlayerPos = player.position;
+  if (!g_previousPlayerPosReady)
+  {
+    syncPreviousPlayerPosition(player.position);
+  }
 
-  const Vec3 previousPlayerPos = s_previousPlayerPos;
+  const Vec3 previousPlayerPos = g_previousPlayerPos;
   const Vec3 playerPos = player.position;
-  s_previousPlayerPos = playerPos;
+  g_previousPlayerPos = playerPos;
   const Vec3 playerHalfExtents {BOARD_RADIUS, BOARD_RADIUS, BOARD_RADIUS};
   const float playerSpeed = length2D(player.velocity);
   int bestRailIndex = -1;
