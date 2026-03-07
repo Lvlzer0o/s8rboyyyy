@@ -25,11 +25,18 @@ Or use the project helper script (recommended for cloud/dev containers):
 ## Build and Run
 
 ```bash
-mkdir -p build
-cd build
-cmake ..
-cmake --build .
-./oneshot-skate
+pwsh ./scripts/build.ps1
+./build/oneshot-skate
+```
+
+If CMake or a C++ compiler is missing, `scripts/build.ps1` now prints install guidance and exits early with a clear error.
+
+Manual commands still work:
+
+```bash
+cmake -S . -B build
+cmake --build build -j4
+./build/oneshot-skate
 ```
 
 Controls:

@@ -33,6 +33,7 @@ add_executable(oneshot-skate
   src/player.cpp
   src/world.cpp
   src/tricks.cpp
+  src/gameplay_state.cpp
   src/agent_orchestrator.cpp
   src/input_controller.cpp
 )

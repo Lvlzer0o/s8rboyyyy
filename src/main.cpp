@@ -21,8 +21,12 @@
 
 #include "player.hpp"
 #include "agent_orchestrator.hpp"
+#include "gameplay_state.hpp"
 #include "input_controller.hpp"
 #include "world.hpp"
+
+using Gameplay::GameState;
+using Gameplay::WORLD_TIME;
 
 namespace
 {
@@ -31,11 +35,6 @@ constexpr float PI = 3.14159265358979323846f;
 constexpr float TAU = PI * 2.0f;
 constexpr float DEG = 180.0f / PI;
 
-constexpr float WORLD_TIME = 180.0f;
-constexpr float GRIND_ENTRY_BONUS = 150;
-constexpr float GRIND_EXIT_BONUS = 85;
-constexpr float GRIND_SCORE_RATE = 140.0f;
-constexpr float GRIND_SPEED_MULT = 1.012f;
 constexpr int SEGMENT_COUNT = 12;
 constexpr int GROUND_SAMPLES = 72;
 
@@ -108,15 +107,6 @@ struct ObjModel
 };
 
 void drawDeck(float flex = 0.0f);
-
-enum class GameState
-{
-  Menu,
-  Play,
-  Pause,
-  Over,
-  Win,
-};
 
 WorldState g_world;
 
@@ -1348,113 +1338,6 @@ void drawTextWithShadow(int x, int y, const std::string& s, float alpha = 1.0f)
   drawText(x, y, s);
 }
 
-void setMessage(const std::string& text, float seconds = 1.5f)
-{
-  g_message = text;
-  g_messageTimer = std::max(g_messageTimer, seconds);
-}
-
-void showOverlay(const std::string& title, const std::string& hint)
-{
-  g_overlayTitle = title;
-  g_overlayHint = hint;
-}
-
-void makeWorld()
-{
-  initializeWorld(g_world, g_player.position);
-}
-
-void resetRun()
-{
-  g_player.position = {0.0f, 4.0f, 0.0f};
-  g_player.velocity = {0.0f, 0.0f, 6.0f};
-  g_player.yaw = 0.0f;
-  g_player.grounded = false;
-  g_player.grinding = false;
-  g_player.grindCombo = 0;
-  g_player.grindTime = 0.0f;
-  g_player.grindHintTimer = 0.0f;
-  g_player.currentGrindIndex = -1;
-  g_player.deckFlex = 0.0f;
-  g_player.airTime = 0.0f;
-  g_player.ollieAnim = 0.0f;
-  g_player.manualBalance = 0.0f;
-  g_player.balanceVelocity = 0.0f;
-  g_player.comboEngine.reset();
-  g_player.trickFsm.reset(true);
-  g_player.trickState = TrickState::Grounded;
-  g_player.bailedThisFrame = false;
-  g_player.invuln = 0.0f;
-  g_player.lives = 3;
-  g_player.score = 0;
-  g_player.distance = 0.0f;
-  g_timeLeft = WORLD_TIME;
-  g_flash = 0.0f;
-  g_state = GameState::Play;
-  g_paused = false;
-  showOverlay("", "");
-  g_menuYaw = 0.0f;
-
-  resetWorld(g_world, g_player.position);
-
-  g_message = "Ride the line";
-  g_messageTimer = 0.75f;
-}
-
-void loseLife()
-{
-  g_player.bailedThisFrame = true;
-  g_player.comboEngine.onBail();
-  g_player.grinding = false;
-  g_player.grindCombo = 0;
-  g_player.grindTime = 0.0f;
-  g_player.currentGrindIndex = -1;
-  g_player.deckFlex = 0.0f;
-  g_player.ollieAnim = 0.0f;
-  g_player.manualBalance = 0.0f;
-  g_player.balanceVelocity = 0.0f;
-  --g_player.lives;
-  g_player.invuln = 1.2f;
-  g_flash = 0.18f;
-  g_player.velocity.x *= 0.33f;
-  g_player.velocity.z *= 0.33f;
-  g_player.velocity.y *= 0.25f;
-  setMessage("Clean Hit! -1 Life", 1.1f);
-
-  if (g_player.lives <= 0)
-  {
-    g_state = GameState::Over;
-    showOverlay("GAME OVER", "Score " + std::to_string(g_player.score) + " - Press Enter or R to Replay");
-  }
-}
-
-void winRun()
-{
-  g_state = GameState::Win;
-  showOverlay("TIME FINISHED - GREAT RIDE!", "Score " + std::to_string(g_player.score) + " - Press Enter or R to Replay");
-}
-
-bool forwardPressed()
-{
-  return g_inputController.isDown(SDL_SCANCODE_W) || g_inputController.isDown(SDL_SCANCODE_UP);
-}
-
-bool backwardPressed()
-{
-  return g_inputController.isDown(SDL_SCANCODE_S) || g_inputController.isDown(SDL_SCANCODE_DOWN);
-}
-
-bool leftPressed()
-{
-  return g_inputController.isDown(SDL_SCANCODE_A) || g_inputController.isDown(SDL_SCANCODE_LEFT);
-}
-
-bool rightPressed()
-{
-  return g_inputController.isDown(SDL_SCANCODE_D) || g_inputController.isDown(SDL_SCANCODE_RIGHT);
-}
-
 const char* trickStateLabel(TrickState state)
 {
   switch (state)
@@ -1491,285 +1374,6 @@ std::string activeTrickLabel()
   }
 
   return trickStateLabel(g_player.trickState);
-}
-
-InputState buildInputState(bool consumeQueuedJump = false)
-{
-  InputState input;
-  input.forwardPressed = forwardPressed();
-  input.backwardPressed = backwardPressed();
-  input.turnAxis = (rightPressed() ? 1.0f : 0.0f) - (leftPressed() ? 1.0f : 0.0f);
-  input.jumpPressed = g_inputController.jumpQueued();
-  if (consumeQueuedJump && input.jumpPressed)
-  {
-    g_inputController.setJumpQueued(false);
-  }
-  input.flipPressed = g_inputController.isDown(SDL_SCANCODE_LSHIFT) || g_inputController.isDown(SDL_SCANCODE_RSHIFT);
-  return input;
-}
-
-void recycleWorld(float dt)
-{
-  recycleWorld(g_world, g_player.position, dt);
-}
-
-bool intersectsAabb(const Vec3& centerA, const Vec3& halfExtentsA, const Vec3& centerB, const Vec3& halfExtentsB)
-{
-  return std::fabs(centerA.x - centerB.x) <= halfExtentsA.x + halfExtentsB.x &&
-    std::fabs(centerA.y - centerB.y) <= halfExtentsA.y + halfExtentsB.y &&
-    std::fabs(centerA.z - centerB.z) <= halfExtentsA.z + halfExtentsB.z;
-}
-
-bool sweptAabbHit(
-  const Vec3& start,
-  const Vec3& end,
-  const Vec3& playerHalfExtents,
-  const Vec3& obstacleCenter,
-  const Vec3& obstacleHalfExtents)
-{
-  const Vec3 expandedHalf {
-    obstacleHalfExtents.x + playerHalfExtents.x,
-    obstacleHalfExtents.y + playerHalfExtents.y,
-    obstacleHalfExtents.z + playerHalfExtents.z,
-  };
-
-  const Vec3 delta {end.x - start.x, end.y - start.y, end.z - start.z};
-
-  float entry = 0.0f;
-  float exit = 1.0f;
-
-  auto sweepAxis = [&](float startAxis, float deltaAxis, float minAxis, float maxAxis)
-  {
-    if (std::fabs(deltaAxis) < 0.00001f)
-    {
-      return startAxis >= minAxis && startAxis <= maxAxis;
-    }
-
-    const float inv = 1.0f / deltaAxis;
-    float t0 = (minAxis - startAxis) * inv;
-    float t1 = (maxAxis - startAxis) * inv;
-
-    if (t0 > t1)
-    {
-      std::swap(t0, t1);
-    }
-
-    entry = std::max(entry, t0);
-    exit = std::min(exit, t1);
-    return entry <= exit;
-  };
-
-  const float minX = obstacleCenter.x - expandedHalf.x;
-  const float maxX = obstacleCenter.x + expandedHalf.x;
-  const float minY = obstacleCenter.y - expandedHalf.y;
-  const float maxY = obstacleCenter.y + expandedHalf.y;
-  const float minZ = obstacleCenter.z - expandedHalf.z;
-  const float maxZ = obstacleCenter.z + expandedHalf.z;
-
-  if (!sweepAxis(start.x, delta.x, minX, maxX))
-  {
-    return false;
-  }
-  if (!sweepAxis(start.y, delta.y, minY, maxY))
-  {
-    return false;
-  }
-  if (!sweepAxis(start.z, delta.z, minZ, maxZ))
-  {
-    return false;
-  }
-
-  return exit >= 0.0f && entry <= 1.0f;
-}
-
-void updateObstaclesAndCoins(float dt)
-{
-  // Track the player's position from the previous frame to get an accurate swept segment.
-  static Vec3 s_previousPlayerPos = g_player.position;
-
-  const Vec3 previousPlayerPos = s_previousPlayerPos;
-  const Vec3 playerPos = g_player.position;
-  s_previousPlayerPos = playerPos;
-  const Vec3 playerHalfExtents {BOARD_RADIUS, BOARD_RADIUS, BOARD_RADIUS};
-  const float playerSpeed = length2D(g_player.velocity);
-  int bestRailIndex = -1;
-  float bestRailScore = 1.0e9f;
-
-  for (size_t i = 0; i < g_world.obstacles.size(); ++i)
-  {
-    auto& obstacle = g_world.obstacles[i];
-    if (!obstacle.active)
-    {
-      continue;
-    }
-
-    const float testY = terrainHeight(obstacle.position.x, obstacle.position.z) + obstacle.radius;
-    obstacle.position.y = std::fma(0.2f, (testY - obstacle.position.y), obstacle.position.y);
-
-    const Vec3 d{playerPos.x - obstacle.position.x, playerPos.y - obstacle.position.y, playerPos.z - obstacle.position.z};
-    const bool collidesNow = intersectsAabb(playerPos, playerHalfExtents, obstacle.position, obstacle.collisionHalfExtents);
-    const bool sweptCollision = sweptAabbHit(
-      previousPlayerPos,
-      playerPos,
-      playerHalfExtents,
-      obstacle.position,
-      obstacle.collisionHalfExtents);
-
-    if (!obstacle.rail && (collidesNow || sweptCollision) && g_player.invuln <= 0.0f && obstacle.hitCooldown <= 0.0f)
-    {
-      obstacle.hitCooldown = 1.0f;
-      loseLife();
-      break;
-    }
-
-    if (obstacle.rail && (collidesNow || sweptCollision) && g_player.invuln <= 0.0f && obstacle.hitCooldown <= 0.0f &&
-        !canGrindOnRail(obstacle, playerPos, playerSpeed))
-    {
-      obstacle.hitCooldown = 1.0f;
-      loseLife();
-      break;
-    }
-
-    if (obstacle.rail && canGrindOnRail(obstacle, playerPos, playerSpeed))
-    {
-      const float score = d.x * d.x + d.z * d.z;
-      if (score < bestRailScore)
-      {
-        bestRailScore = score;
-        bestRailIndex = static_cast<int>(i);
-      }
-    }
-  }
-
-  const bool canGrind = g_player.invuln <= 0.0f && bestRailIndex >= 0 && g_player.grounded;
-  if (canGrind)
-  {
-    const bool continuingRail = g_player.grinding && g_player.currentGrindIndex == bestRailIndex;
-
-    if (!continuingRail)
-    {
-      const int combo = std::max(1, g_player.grindCombo + 1);
-      g_player.grindCombo = combo;
-      const int entryScore = GRIND_ENTRY_BONUS + combo * 20;
-      g_player.comboEngine.bumpMultiplier(0.22f);
-      const int entryAward = g_player.comboEngine.addPoints(entryScore);
-      g_player.grindHintTimer = 0.35f;
-      setMessage("GRIND +" + std::to_string(entryAward) + "x" + std::to_string(combo), 0.9f);
-      g_player.grindTime = 0.0f;
-      g_player.grindScoreCarry = 0.0f;
-    }
-
-    g_player.grinding = true;
-    g_player.currentGrindIndex = bestRailIndex;
-    g_player.grindTime += dt;
-    g_player.grindHintTimer = std::max(0.0f, g_player.grindHintTimer - dt);
-    g_player.grindScoreCarry += GRIND_SCORE_RATE * dt;
-
-    const int grindScore = static_cast<int>(std::floor(g_player.grindScoreCarry));
-    if (grindScore > 0)
-    {
-      g_player.comboEngine.addPoints(grindScore);
-      g_player.grindScoreCarry -= static_cast<float>(grindScore);
-    }
-
-    g_player.velocity.z *= GRIND_SPEED_MULT;
-    g_player.velocity.x *= 0.88f;
-    if (g_player.velocity.y > 0.0f)
-    {
-      g_player.velocity.y = 0.0f;
-    }
-    g_player.airTime = 0.0f;
-    g_player.grounded = true;
-    if (g_player.grindHintTimer <= 0.0f)
-    {
-      setMessage("GRINDING", 0.35f);
-      g_player.grindHintTimer = 0.42f;
-    }
-  }
-  else
-  {
-    if (g_player.grinding)
-    {
-      const int exitScore = GRIND_EXIT_BONUS + g_player.grindCombo * 30;
-      g_player.comboEngine.bumpMultiplier(0.12f);
-      const int exitAward = g_player.comboEngine.addPoints(exitScore);
-      setMessage("GRIND END +" + std::to_string(exitAward), 0.55f);
-    }
-
-    g_player.grinding = false;
-    g_player.currentGrindIndex = -1;
-    g_player.grindTime = 0.0f;
-    g_player.grindHintTimer = 0.0f;
-    g_player.grindScoreCarry = 0.0f;
-    g_player.grindCombo = 0;
-
-    if (g_player.invuln <= 0.0f && g_player.velocity.y <= 0.0f)
-    {
-      for (const auto& obstacle : g_world.obstacles)
-      {
-        if (!obstacle.active || !obstacle.rail)
-        {
-          continue;
-        }
-
-        const bool collidesNow = intersectsAabb(playerPos, playerHalfExtents, obstacle.position, obstacle.collisionHalfExtents);
-        const bool sweptCollision = sweptAabbHit(
-          previousPlayerPos,
-          playerPos,
-          playerHalfExtents,
-          obstacle.position,
-          obstacle.collisionHalfExtents);
-        if ((collidesNow || sweptCollision) && obstacle.hitCooldown <= 0.0f)
-        {
-          loseLife();
-          break;
-        }
-      }
-    }
-  }
-
-  for (auto& coin : g_world.coins)
-  {
-    if (!coin.active)
-    {
-      continue;
-    }
-
-    coin.spin += dt * 1.1f;
-    coin.position.y = terrainHeight(coin.position.x, coin.position.z) + 1.15f + std::sin(nowSeconds() * 2.0f + coin.phase) * 0.12f;
-
-    const Vec3 d{playerPos.x - coin.position.x, playerPos.y - coin.position.y, playerPos.z - coin.position.z};
-    const float dist = length3D(d);
-
-    if (dist < coin.radius + BOARD_RADIUS)
-    {
-      g_player.score += 175;
-      coin.active = false;
-      setMessage("+175 Neon Coin", 1.0f);
-    }
-  }
-}
-
-void updateTimers(float dt)
-{
-  if (g_player.invuln > 0.0f)
-  {
-    g_player.invuln = std::max(0.0f, g_player.invuln - dt);
-  }
-
-  if (g_messageTimer > 0.0f)
-  {
-    g_messageTimer -= dt;
-    if (g_messageTimer <= 0.0f)
-    {
-      g_message.clear();
-    }
-  }
-
-  if (g_flash > 0.0f)
-  {
-    g_flash = std::max(0.0f, g_flash - dt);
-  }
 }
 
 void drawRect2D(float x0, float y0, float x1, float y1, float r, float g, float b, float a)
@@ -3585,12 +3189,19 @@ void tick()
     g_fixedPhysicsAccumulator = std::min(g_fixedPhysicsAccumulator + frameDt, MAX_PHYSICS_CATCHUP);
     while (g_fixedPhysicsAccumulator >= FIXED_PHYSICS_STEP)
     {
-      const InputState input = buildInputState(true);
+      const InputState input = Gameplay::buildInputState(g_inputController, true);
       refreshPlayerGroundState();
       const bool manualWipeout = updatePlayer(FIXED_PHYSICS_STEP, input);
       if (manualWipeout)
       {
-        loseLife();
+        Gameplay::loseLife(
+          g_player,
+          g_state,
+          g_overlayTitle,
+          g_overlayHint,
+          g_message,
+          g_messageTimer,
+          g_flash);
       }
 
       g_player.distance += length2D(g_player.velocity) * FIXED_PHYSICS_STEP;
@@ -3598,14 +3209,24 @@ void tick()
       g_timeLeft -= FIXED_PHYSICS_STEP;
       if (g_timeLeft <= 0.0f)
       {
-        winRun();
+        Gameplay::winRun(g_player, g_state, g_overlayTitle, g_overlayHint);
         g_timeLeft = 0.0f;
       }
 
-      recycleWorld(FIXED_PHYSICS_STEP);
-      updateObstaclesAndCoins(FIXED_PHYSICS_STEP);
+      recycleWorld(g_world, g_player.position, FIXED_PHYSICS_STEP);
+      Gameplay::updateObstaclesAndCoins(
+        FIXED_PHYSICS_STEP,
+        nowSeconds(),
+        g_world,
+        g_player,
+        g_state,
+        g_flash,
+        g_message,
+        g_messageTimer,
+        g_overlayTitle,
+        g_overlayHint);
       updateTrickState(FIXED_PHYSICS_STEP, input);
-      updateTimers(FIXED_PHYSICS_STEP);
+      Gameplay::updateTimers(FIXED_PHYSICS_STEP, g_player, g_message, g_messageTimer, g_flash);
 
       g_fixedPhysicsAccumulator -= FIXED_PHYSICS_STEP;
 
@@ -3619,7 +3240,7 @@ void tick()
   else
   {
     g_fixedPhysicsAccumulator = 0.0f;
-    updateTimers(frameDt);
+    Gameplay::updateTimers(frameDt, g_player, g_message, g_messageTimer, g_flash);
   }
 }
 
@@ -3642,7 +3263,18 @@ void setRunStateForKey(SDL_Keycode key)
     case SDLK_KP_ENTER:
       if (g_state == GameState::Menu)
       {
-        resetRun();
+        Gameplay::resetRun(
+          g_player,
+          g_world,
+          g_state,
+          g_paused,
+          g_timeLeft,
+          g_menuYaw,
+          g_flash,
+          g_message,
+          g_messageTimer,
+          g_overlayTitle,
+          g_overlayHint);
       }
       else if (g_state == GameState::Pause)
       {
@@ -3651,14 +3283,36 @@ void setRunStateForKey(SDL_Keycode key)
       }
       else if (g_state == GameState::Over || g_state == GameState::Win)
       {
-        resetRun();
+        Gameplay::resetRun(
+          g_player,
+          g_world,
+          g_state,
+          g_paused,
+          g_timeLeft,
+          g_menuYaw,
+          g_flash,
+          g_message,
+          g_messageTimer,
+          g_overlayTitle,
+          g_overlayHint);
       }
       break;
     case 'r':
     case 'R':
       if (g_state == GameState::Over || g_state == GameState::Win)
       {
-        resetRun();
+        Gameplay::resetRun(
+          g_player,
+          g_world,
+          g_state,
+          g_paused,
+          g_timeLeft,
+          g_menuYaw,
+          g_flash,
+          g_message,
+          g_messageTimer,
+          g_overlayTitle,
+          g_overlayHint);
       }
       break;
     default:
@@ -3739,9 +3393,20 @@ void initGame()
   startupJob.dispatchToRuntime = true;
   g_agentOrchestrator.submit(startupJob);
 
-  makeWorld();
-  resetRun();
-  showOverlay("ONESHOT SKATE", "Press Enter to Start");
+  Gameplay::makeWorld(g_world, g_player.position);
+  Gameplay::resetRun(
+    g_player,
+    g_world,
+    g_state,
+    g_paused,
+    g_timeLeft,
+    g_menuYaw,
+    g_flash,
+    g_message,
+    g_messageTimer,
+    g_overlayTitle,
+    g_overlayHint);
+  Gameplay::showOverlay(g_overlayTitle, g_overlayHint, "ONESHOT SKATE", "Press Enter to Start");
   g_state = GameState::Menu;
   g_lastFrame = nowSeconds();
 }
